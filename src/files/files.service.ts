@@ -3,8 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
+  CreateStartupDataRoomUploadUrlInput,
   CreateStartupPitchDeckUploadUrlInput,
   CreateStartupReadinessUploadUrlInput,
+  type StartupDataRoomDocumentType,
 } from './files.types';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -155,6 +157,80 @@ export class FilesService {
     return { uploadUrl, publicUrl, objectKey };
   }
 
+  async createStartupDataRoomUploadUrl(
+    userId: string,
+    input: CreateStartupDataRoomUploadUrlInput,
+  ): Promise<{ uploadUrl: string; publicUrl: string | null; objectKey: string }> {
+    if (!this.s3 || !this.bucketName) {
+      throw new InternalServerErrorException('R2 storage is not configured');
+    }
+
+    const orgId = this.normalizeOptionalText(input.orgId);
+    if (!orgId) {
+      throw new InternalServerErrorException('Organization id is required.');
+    }
+
+    await this.assertStartupUploadAccess(userId, orgId);
+
+    if (input.contentLength <= 0 || input.contentLength > 100 * 1024 * 1024) {
+      throw new InternalServerErrorException('Data room asset must be 100MB or smaller.');
+    }
+
+    const pitchDeckMimeTypes = new Set([
+      'application/pdf',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'video/mp4',
+      'video/webm',
+      'video/quicktime',
+    ]);
+    const documentMimeTypes = new Set([
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'text/csv',
+      'text/plain',
+    ]);
+
+    const isPitchDeck = input.documentType === 'pitch_deck';
+    const allowedMimeTypes = isPitchDeck ? pitchDeckMimeTypes : documentMimeTypes;
+    if (!allowedMimeTypes.has(input.contentType)) {
+      if (isPitchDeck) {
+        throw new InternalServerErrorException('Pitch deck must be PDF/PPT/PPTX or MP4/WEBM/MOV.');
+      }
+
+      throw new InternalServerErrorException(
+        'Data room document must be PDF, DOC/DOCX, XLS/XLSX, TXT, or CSV.',
+      );
+    }
+
+    const safeOrgId = orgId;
+    const now = Date.now();
+    const extension = this.resolveDataRoomExtension(
+      input.fileName,
+      input.contentType,
+      input.documentType,
+    );
+    const objectKey = `startups/${safeOrgId}/data-room/${input.documentType}-${now}.${extension}`;
+
+    const putCommand = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: objectKey,
+      ContentType: input.contentType,
+    });
+
+    const uploadUrl = await getSignedUrl(this.s3, putCommand, { expiresIn: 15 * 60 });
+
+    const publicUrl =
+      this.publicBaseUrl != null
+        ? `${this.publicBaseUrl.replace(/\/+$/, '')}/${objectKey}`
+        : null;
+
+    return { uploadUrl, publicUrl, objectKey };
+  }
+
   private resolveExtension(
     fileName: string,
     contentType: string,
@@ -185,5 +261,17 @@ export class FilesService {
     }
 
     return 'bin';
+  }
+
+  private resolveDataRoomExtension(
+    fileName: string,
+    contentType: string,
+    documentType: StartupDataRoomDocumentType,
+  ): string {
+    if (documentType === 'pitch_deck') {
+      return this.resolveExtension(fileName, contentType, 'pitch_deck');
+    }
+
+    return this.resolveExtension(fileName, contentType, 'financial_doc');
   }
 }

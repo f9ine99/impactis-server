@@ -84,6 +84,7 @@ export class UpstashRedisCacheService {
       'settings-billing',
       'settings-startup-readiness',
       'settings-discovery',
+      'settings-data-room',
       'settings-invites',
       'settings-permissions',
       'settings-team-access',

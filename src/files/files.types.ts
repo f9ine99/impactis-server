@@ -48,3 +48,36 @@ export class CreateStartupReadinessUploadUrlInput {
   @Max(50 * 1024 * 1024)
   contentLength!: number;
 }
+
+export const STARTUP_DATA_ROOM_DOCUMENT_TYPES = [
+  'pitch_deck',
+  'financial_model',
+  'cap_table',
+  'traction_metrics',
+  'legal_company_docs',
+  'incorporation_docs',
+  'customer_contracts_summaries',
+  'term_sheet_drafts',
+] as const;
+
+export type StartupDataRoomDocumentType = (typeof STARTUP_DATA_ROOM_DOCUMENT_TYPES)[number];
+
+export class CreateStartupDataRoomUploadUrlInput {
+  @IsUUID()
+  orgId!: string;
+
+  @IsIn(STARTUP_DATA_ROOM_DOCUMENT_TYPES)
+  documentType!: StartupDataRoomDocumentType;
+
+  @IsString()
+  @MaxLength(255)
+  fileName!: string;
+
+  @IsMimeType()
+  contentType!: string;
+
+  @IsInt()
+  @Min(1)
+  @Max(100 * 1024 * 1024)
+  contentLength!: number;
+}
