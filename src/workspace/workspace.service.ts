@@ -103,6 +103,7 @@ const WORKSPACE_SETTINGS_SECTIONS = [
   'settings-billing',
   'settings-startup-readiness',
   'settings-discovery',
+  'settings-data-room',
   'settings-invites',
   'settings-permissions',
   'settings-team-access',
@@ -1687,7 +1688,11 @@ export class WorkspaceService {
       let startupReadiness: WorkspaceSettingsSnapshot['startup_readiness'] = null;
 
       if (membership.orgType === 'startup') {
-        if (section === 'settings-startup-readiness' || section === 'settings-discovery') {
+        if (
+          section === 'settings-startup-readiness'
+          || section === 'settings-discovery'
+          || section === 'settings-data-room'
+        ) {
           startupProfile = await this.getStartupProfileForOrg(membership.orgId);
           startupPost = await this.getStartupPostForOrg(membership.orgId);
         }
