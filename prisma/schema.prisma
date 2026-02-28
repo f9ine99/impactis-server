@@ -1,0 +1,12 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// The Impactis Postgres schema is currently managed by Supabase SQL migrations
+// in the Next.js repo (supabase/migrations). For the initial bootstrap of the
+// NestJS backend we rely primarily on raw SQL through a lightweight DB service.
