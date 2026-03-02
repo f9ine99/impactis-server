@@ -51,6 +51,8 @@ export class CreateStartupReadinessUploadUrlInput {
 
 export const STARTUP_DATA_ROOM_DOCUMENT_TYPES = [
   'pitch_deck',
+  'financial_doc',
+  'legal_doc',
   'financial_model',
   'cap_table',
   'traction_metrics',

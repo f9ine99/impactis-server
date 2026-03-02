@@ -22,6 +22,8 @@ export class StartupMutationResult {
 
 export const STARTUP_DATA_ROOM_DOCUMENT_TYPES = [
   'pitch_deck',
+  'financial_doc',
+  'legal_doc',
   'financial_model',
   'cap_table',
   'traction_metrics',
@@ -99,6 +101,8 @@ export type StartupDataRoomDocumentView = {
   document_type: StartupDataRoomDocumentType;
   title: string;
   file_url: string;
+  storage_bucket: string | null;
+  storage_object_path: string | null;
   file_name: string | null;
   file_size_bytes: number | null;
   content_type: string | null;
@@ -251,8 +255,19 @@ export class UpsertStartupDataRoomDocumentInput {
   @MaxLength(160)
   title!: string;
 
+  @IsOptional()
   @IsUrl({ require_protocol: true })
-  fileUrl!: string;
+  fileUrl?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  storageBucket?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1024)
+  storageObjectPath?: string | null;
 
   @IsOptional()
   @IsString()

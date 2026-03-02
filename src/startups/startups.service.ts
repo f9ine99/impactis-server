@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { ReadinessService } from '../readiness/readiness.service';
 import { UpstashRedisCacheService } from '../cache/upstash-redis-cache.service';
@@ -22,16 +23,26 @@ type StartupMembershipContext = {
 const STARTUP_DATA_ROOM_DOCUMENT_TYPE_SET = new Set<StartupDataRoomDocumentType>(
   STARTUP_DATA_ROOM_DOCUMENT_TYPES,
 );
+const STARTUP_DATA_ROOM_ASSET_BUCKET = 'startup-data-room-assets';
+const SUPABASE_PUBLIC_STORAGE_OBJECT_BASE_PATH = '/storage/v1/object/public';
+const SUPABASE_PUBLIC_STORAGE_OBJECT_PREFIX = `${SUPABASE_PUBLIC_STORAGE_OBJECT_BASE_PATH}/`;
 
 @Injectable()
 export class StartupsService {
   private readonly logger = new Logger(StartupsService.name);
+  private readonly supabaseStoragePublicBaseUrl: string | null;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly readiness: ReadinessService,
     private readonly cache: UpstashRedisCacheService,
-  ) {}
+    private readonly config: ConfigService,
+  ) {
+    const supabaseUrlRaw = this.normalizeOptionalText(this.config.get<string>('supabaseUrl'));
+    this.supabaseStoragePublicBaseUrl = supabaseUrlRaw
+      ? `${supabaseUrlRaw.replace(/\/+$/, '')}${SUPABASE_PUBLIC_STORAGE_OBJECT_BASE_PATH}`
+      : null;
+  }
 
   private normalizeOptionalText(value: string | null | undefined): string | null {
     if (typeof value !== 'string') {
@@ -68,6 +79,33 @@ export class StartupsService {
 
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
+  }
+
+  private buildSupabasePublicStorageUrl(bucketId: string, objectPath: string): string | null {
+    if (!this.supabaseStoragePublicBaseUrl) {
+      return null;
+    }
+
+    return `${this.supabaseStoragePublicBaseUrl}/${bucketId}/${objectPath}`;
+  }
+
+  private resolveDocumentPublicUrl(
+    fileUrl: string | null | undefined,
+    storageBucket: string | null | undefined,
+    storageObjectPath: string | null | undefined,
+  ): string | null {
+    const normalizedFileUrl = this.normalizeOptionalText(fileUrl);
+    if (normalizedFileUrl) {
+      return normalizedFileUrl;
+    }
+
+    const bucketId = this.normalizeOptionalText(storageBucket);
+    const objectPath = this.normalizeOptionalText(storageObjectPath);
+    if (!bucketId || !objectPath) {
+      return null;
+    }
+
+    return this.buildSupabasePublicStorageUrl(bucketId, objectPath);
   }
 
   private normalizeTextArray(value: unknown): string[] {
@@ -112,12 +150,186 @@ export class StartupsService {
     return null;
   }
 
+  private resolveDefaultDocumentTitle(documentType: StartupDataRoomDocumentType): string {
+    if (documentType === 'pitch_deck') {
+      return 'Pitch Deck';
+    }
+
+    if (documentType === 'financial_doc') {
+      return 'Financial Readiness Document';
+    }
+
+    if (documentType === 'legal_doc') {
+      return 'Legal Readiness Document';
+    }
+
+    return 'Data Room Document';
+  }
+
+  private async syncProfileDocument(input: {
+    orgId: string;
+    userId: string;
+    documentType: StartupDataRoomDocumentType;
+    shouldMutate: boolean;
+    fileUrl: string | null;
+    fileName?: string | null;
+    fileSizeBytes?: number | null;
+    contentType?: string | null;
+    title?: string | null;
+  }): Promise<void> {
+    if (!input.shouldMutate) {
+      return;
+    }
+
+    if (!input.fileUrl) {
+      await this.prisma.$queryRaw`
+        delete from public.startup_data_room_documents d
+        where d.startup_org_id = ${input.orgId}::uuid
+          and d.document_type = ${input.documentType}::public.startup_data_room_document_type
+      `;
+      return;
+    }
+
+    const storageTarget = this.resolveStorageTargetFromInput({
+      fileUrl: input.fileUrl,
+      storageBucket: null,
+      storageObjectPath: null,
+    });
+    this.assertStorageTargetForStartupDocument({
+      target: storageTarget,
+      expectedBucket: STARTUP_DATA_ROOM_ASSET_BUCKET,
+      orgId: input.orgId,
+      contextLabel: 'Readiness document URL',
+    });
+
+    const resolvedTitle =
+      this.normalizeOptionalText(input.title) ?? this.resolveDefaultDocumentTitle(input.documentType);
+
+    await this.prisma.$queryRaw`
+      insert into public.startup_data_room_documents as d (
+        startup_org_id,
+        document_type,
+        title,
+        file_url,
+        storage_bucket,
+        storage_object_path,
+        file_name,
+        file_size_bytes,
+        content_type,
+        uploaded_by,
+        updated_at
+      )
+      values (
+        ${input.orgId}::uuid,
+        ${input.documentType}::public.startup_data_room_document_type,
+        ${resolvedTitle},
+        ${input.fileUrl},
+        ${storageTarget?.bucketId ?? null},
+        ${storageTarget?.objectPath ?? null},
+        ${input.fileName ?? null},
+        ${input.fileSizeBytes ?? null},
+        ${input.contentType ?? null},
+        ${input.userId}::uuid,
+        timezone('utc', now())
+      )
+      on conflict (startup_org_id, document_type) do update
+      set
+        title = excluded.title,
+        file_url = excluded.file_url,
+        storage_bucket = excluded.storage_bucket,
+        storage_object_path = excluded.storage_object_path,
+        file_name = excluded.file_name,
+        file_size_bytes = excluded.file_size_bytes,
+        content_type = excluded.content_type,
+        uploaded_by = ${input.userId}::uuid,
+        updated_at = timezone('utc', now())
+    `;
+  }
+
   private isValidHttpUrl(value: string): boolean {
     try {
       const parsed = new URL(value);
       return parsed.protocol === 'http:' || parsed.protocol === 'https:';
     } catch {
       return false;
+    }
+  }
+
+  private resolveSupabasePublicStorageTarget(
+    fileUrl: string,
+  ): { bucketId: string; objectPath: string } | null {
+    try {
+      const parsed = new URL(fileUrl);
+      const pathname = parsed.pathname ?? '';
+      if (!pathname.startsWith(SUPABASE_PUBLIC_STORAGE_OBJECT_PREFIX)) {
+        return null;
+      }
+
+      const remainder = decodeURIComponent(
+        pathname.slice(SUPABASE_PUBLIC_STORAGE_OBJECT_PREFIX.length),
+      ).trim();
+      if (!remainder) {
+        return null;
+      }
+
+      const [bucketIdRaw, ...pathParts] = remainder.split('/');
+      const bucketId = this.normalizeOptionalText(bucketIdRaw);
+      const objectPath = this.normalizeOptionalText(pathParts.join('/'));
+      if (!bucketId || !objectPath) {
+        return null;
+      }
+
+      return { bucketId, objectPath };
+    } catch {
+      return null;
+    }
+  }
+
+  private resolveStorageTargetFromInput(input: {
+    fileUrl: string | null;
+    storageBucket?: string | null;
+    storageObjectPath?: string | null;
+  }): { bucketId: string; objectPath: string } | null {
+    const fileUrl = this.normalizeOptionalText(input.fileUrl);
+    const storageBucket = this.normalizeOptionalText(input.storageBucket);
+    const storageObjectPath = this.normalizeOptionalText(input.storageObjectPath);
+
+    if ((storageBucket && !storageObjectPath) || (!storageBucket && storageObjectPath)) {
+      throw new Error('Storage bucket and object path must be provided together.');
+    }
+
+    if (storageBucket && storageObjectPath) {
+      return {
+        bucketId: storageBucket,
+        objectPath: storageObjectPath,
+      };
+    }
+
+    if (fileUrl) {
+      return this.resolveSupabasePublicStorageTarget(fileUrl);
+    }
+
+    return null;
+  }
+
+  private assertStorageTargetForStartupDocument(input: {
+    target: { bucketId: string; objectPath: string } | null;
+    expectedBucket: string;
+    orgId: string;
+    contextLabel: string;
+  }): void {
+    const target = input.target;
+    if (!target) {
+      return;
+    }
+
+    if (target.bucketId !== input.expectedBucket) {
+      throw new Error(`${input.contextLabel} must be uploaded to ${input.expectedBucket}.`);
+    }
+
+    const orgPrefix = `${input.orgId}/`;
+    if (!target.objectPath.startsWith(orgPrefix)) {
+      throw new Error(`${input.contextLabel} must belong to your startup organization folder.`);
     }
   }
 
@@ -267,9 +479,12 @@ export class StartupsService {
         startup_org_id: string;
         website_url: string | null;
         pitch_deck_url: string | null;
+        pitch_deck_storage_bucket: string | null;
+        pitch_deck_storage_object_path: string | null;
         pitch_deck_media_kind: string | null;
         pitch_deck_file_name: string | null;
         pitch_deck_file_size_bytes: number | string | null;
+        pitch_deck_content_type: string | null;
         team_overview: string | null;
         company_stage: string | null;
         founding_year: number | string | null;
@@ -280,25 +495,40 @@ export class StartupsService {
         financial_summary: string | null;
         legal_summary: string | null;
         financial_doc_url: string | null;
+        financial_doc_storage_bucket: string | null;
+        financial_doc_storage_object_path: string | null;
         financial_doc_file_name: string | null;
         financial_doc_file_size_bytes: number | string | null;
+        financial_doc_content_type: string | null;
         legal_doc_url: string | null;
+        legal_doc_storage_bucket: string | null;
+        legal_doc_storage_object_path: string | null;
         legal_doc_file_name: string | null;
         legal_doc_file_size_bytes: number | string | null;
+        legal_doc_content_type: string | null;
         updated_at: string | Date | null;
       }>
     >`
       select
         o.id as startup_org_id,
         nullif(trim(coalesce(sp.website_url, '')), '') as website_url,
-        nullif(trim(coalesce(sp.pitch_deck_url, '')), '') as pitch_deck_url,
+        nullif(trim(coalesce(pitch_doc.file_url, '')), '') as pitch_deck_url,
+        nullif(trim(coalesce(pitch_doc.storage_bucket, '')), '') as pitch_deck_storage_bucket,
+        nullif(trim(coalesce(pitch_doc.storage_object_path, '')), '') as pitch_deck_storage_object_path,
         case
-          when sp.pitch_deck_media_kind in ('document', 'video')
-            then sp.pitch_deck_media_kind::text
+          when coalesce(pitch_doc.content_type, '') ilike 'video/%'
+            then 'video'
+          when coalesce(pitch_doc.file_name, '') ~* '\\.(mp4|webm|mov)$'
+            then 'video'
+          when coalesce(pitch_doc.file_url, '') ~* '\\.(mp4|webm|mov)(\\?|$)'
+            then 'video'
+          when pitch_doc.file_url is not null
+            then 'document'
           else null
         end as pitch_deck_media_kind,
-        nullif(trim(coalesce(sp.pitch_deck_file_name, '')), '') as pitch_deck_file_name,
-        sp.pitch_deck_file_size_bytes,
+        nullif(trim(coalesce(pitch_doc.file_name, '')), '') as pitch_deck_file_name,
+        pitch_doc.file_size_bytes as pitch_deck_file_size_bytes,
+        nullif(trim(coalesce(pitch_doc.content_type, '')), '') as pitch_deck_content_type,
         nullif(trim(coalesce(sp.team_overview, '')), '') as team_overview,
         nullif(trim(coalesce(sp.company_stage, '')), '') as company_stage,
         sp.founding_year,
@@ -308,15 +538,90 @@ export class StartupsService {
         nullif(trim(coalesce(sp.traction_summary, '')), '') as traction_summary,
         nullif(trim(coalesce(sp.financial_summary, '')), '') as financial_summary,
         nullif(trim(coalesce(sp.legal_summary, '')), '') as legal_summary,
-        nullif(trim(coalesce(sp.financial_doc_url, '')), '') as financial_doc_url,
-        nullif(trim(coalesce(sp.financial_doc_file_name, '')), '') as financial_doc_file_name,
-        sp.financial_doc_file_size_bytes,
-        nullif(trim(coalesce(sp.legal_doc_url, '')), '') as legal_doc_url,
-        nullif(trim(coalesce(sp.legal_doc_file_name, '')), '') as legal_doc_file_name,
-        sp.legal_doc_file_size_bytes,
+        nullif(trim(coalesce(fin_doc.file_url, '')), '') as financial_doc_url,
+        nullif(trim(coalesce(fin_doc.storage_bucket, '')), '') as financial_doc_storage_bucket,
+        nullif(trim(coalesce(fin_doc.storage_object_path, '')), '') as financial_doc_storage_object_path,
+        nullif(trim(coalesce(fin_doc.file_name, '')), '') as financial_doc_file_name,
+        fin_doc.file_size_bytes as financial_doc_file_size_bytes,
+        nullif(trim(coalesce(fin_doc.content_type, '')), '') as financial_doc_content_type,
+        nullif(trim(coalesce(legal_doc.file_url, '')), '') as legal_doc_url,
+        nullif(trim(coalesce(legal_doc.storage_bucket, '')), '') as legal_doc_storage_bucket,
+        nullif(trim(coalesce(legal_doc.storage_object_path, '')), '') as legal_doc_storage_object_path,
+        nullif(trim(coalesce(legal_doc.file_name, '')), '') as legal_doc_file_name,
+        legal_doc.file_size_bytes as legal_doc_file_size_bytes,
+        nullif(trim(coalesce(legal_doc.content_type, '')), '') as legal_doc_content_type,
         sp.updated_at
       from public.organizations o
       left join public.startup_profiles sp on sp.startup_org_id = o.id
+      left join lateral (
+        select
+          d.file_url,
+          d.storage_bucket,
+          d.storage_object_path,
+          d.file_name,
+          d.file_size_bytes,
+          d.content_type
+        from public.startup_data_room_documents d
+        where d.startup_org_id = o.id
+          and d.document_type = 'pitch_deck'::public.startup_data_room_document_type
+        order by d.updated_at desc
+        limit 1
+      ) pitch_doc on true
+      left join lateral (
+        select
+          d.file_url,
+          d.storage_bucket,
+          d.storage_object_path,
+          d.file_name,
+          d.file_size_bytes,
+          d.content_type
+        from public.startup_data_room_documents d
+        where d.startup_org_id = o.id
+          and d.document_type::text = any (
+            array[
+              'financial_doc',
+              'financial_model'
+            ]
+          )
+        order by
+          case d.document_type::text
+            when 'financial_doc' then 1
+            else 2
+          end asc,
+          d.updated_at desc
+        limit 1
+      ) fin_doc on true
+      left join lateral (
+        select
+          d.file_url,
+          d.storage_bucket,
+          d.storage_object_path,
+          d.file_name,
+          d.file_size_bytes,
+          d.content_type
+        from public.startup_data_room_documents d
+        where d.startup_org_id = o.id
+          and d.document_type::text = any (
+            array[
+              'legal_doc',
+              'legal_company_docs',
+              'incorporation_docs',
+              'customer_contracts_summaries',
+              'term_sheet_drafts'
+            ]
+          )
+        order by
+          case d.document_type::text
+            when 'legal_doc' then 1
+            when 'legal_company_docs' then 2
+            when 'incorporation_docs' then 3
+            when 'customer_contracts_summaries' then 4
+            when 'term_sheet_drafts' then 5
+            else 999
+          end asc,
+          d.updated_at desc
+        limit 1
+      ) legal_doc on true
       where o.id = ${membership.orgId}::uuid
         and o.type = 'startup'::public.org_type
       limit 1
@@ -327,10 +632,26 @@ export class StartupsService {
       return null;
     }
 
+    const pitchDeckUrl = this.resolveDocumentPublicUrl(
+      row.pitch_deck_url,
+      row.pitch_deck_storage_bucket,
+      row.pitch_deck_storage_object_path,
+    );
+    const financialDocUrl = this.resolveDocumentPublicUrl(
+      row.financial_doc_url,
+      row.financial_doc_storage_bucket,
+      row.financial_doc_storage_object_path,
+    );
+    const legalDocUrl = this.resolveDocumentPublicUrl(
+      row.legal_doc_url,
+      row.legal_doc_storage_bucket,
+      row.legal_doc_storage_object_path,
+    );
+
     return {
       startup_org_id: row.startup_org_id,
       website_url: row.website_url,
-      pitch_deck_url: row.pitch_deck_url,
+      pitch_deck_url: pitchDeckUrl,
       pitch_deck_media_kind: row.pitch_deck_media_kind,
       pitch_deck_file_name: row.pitch_deck_file_name,
       pitch_deck_file_size_bytes: this.normalizeNullableInteger(row.pitch_deck_file_size_bytes),
@@ -343,10 +664,10 @@ export class StartupsService {
       traction_summary: row.traction_summary,
       financial_summary: row.financial_summary,
       legal_summary: row.legal_summary,
-      financial_doc_url: row.financial_doc_url,
+      financial_doc_url: financialDocUrl,
       financial_doc_file_name: row.financial_doc_file_name,
       financial_doc_file_size_bytes: this.normalizeNullableInteger(row.financial_doc_file_size_bytes),
-      legal_doc_url: row.legal_doc_url,
+      legal_doc_url: legalDocUrl,
       legal_doc_file_name: row.legal_doc_file_name,
       legal_doc_file_size_bytes: this.normalizeNullableInteger(row.legal_doc_file_size_bytes),
       updated_at: this.normalizeTimestamp(row.updated_at),
@@ -415,6 +736,8 @@ export class StartupsService {
         document_type: string | null;
         title: string | null;
         file_url: string | null;
+        storage_bucket: string | null;
+        storage_object_path: string | null;
         file_name: string | null;
         file_size_bytes: number | string | null;
         content_type: string | null;
@@ -429,6 +752,8 @@ export class StartupsService {
         d.document_type::text as document_type,
         d.title,
         d.file_url,
+        d.storage_bucket,
+        d.storage_object_path,
         d.file_name,
         d.file_size_bytes,
         d.content_type,
@@ -438,15 +763,17 @@ export class StartupsService {
       from public.startup_data_room_documents d
       where d.startup_org_id = ${membership.orgId}::uuid
       order by
-        case d.document_type
-          when 'pitch_deck'::public.startup_data_room_document_type then 1
-          when 'financial_model'::public.startup_data_room_document_type then 2
-          when 'cap_table'::public.startup_data_room_document_type then 3
-          when 'traction_metrics'::public.startup_data_room_document_type then 4
-          when 'legal_company_docs'::public.startup_data_room_document_type then 5
-          when 'incorporation_docs'::public.startup_data_room_document_type then 6
-          when 'customer_contracts_summaries'::public.startup_data_room_document_type then 7
-          when 'term_sheet_drafts'::public.startup_data_room_document_type then 8
+        case d.document_type::text
+          when 'pitch_deck' then 1
+          when 'financial_doc' then 2
+          when 'legal_doc' then 3
+          when 'financial_model' then 4
+          when 'cap_table' then 5
+          when 'traction_metrics' then 6
+          when 'legal_company_docs' then 7
+          when 'incorporation_docs' then 8
+          when 'customer_contracts_summaries' then 9
+          when 'term_sheet_drafts' then 10
           else 999
         end asc,
         d.updated_at desc
@@ -458,7 +785,13 @@ export class StartupsService {
         const startupOrgId = this.normalizeUuid(row.startup_org_id);
         const documentType = this.normalizeStartupDataRoomDocumentType(row.document_type);
         const title = this.normalizeOptionalText(row.title);
-        const fileUrl = this.normalizeOptionalText(row.file_url);
+        const storageBucket = this.normalizeOptionalText(row.storage_bucket);
+        const storageObjectPath = this.normalizeOptionalText(row.storage_object_path);
+        const fileUrl = this.resolveDocumentPublicUrl(
+          row.file_url,
+          storageBucket,
+          storageObjectPath,
+        );
         const createdAt = this.normalizeTimestamp(row.created_at);
         const updatedAt = this.normalizeTimestamp(row.updated_at);
         if (
@@ -479,6 +812,8 @@ export class StartupsService {
           document_type: documentType,
           title,
           file_url: fileUrl,
+          storage_bucket: storageBucket,
+          storage_object_path: storageObjectPath,
           file_name: this.normalizeOptionalText(row.file_name),
           file_size_bytes: this.normalizeNullableInteger(row.file_size_bytes),
           content_type: this.normalizeOptionalText(row.content_type),
@@ -510,9 +845,32 @@ export class StartupsService {
       throw new Error('Data room document title must be at least 2 characters.');
     }
 
-    const fileUrl = this.normalizeOptionalText(input.fileUrl);
-    if (!fileUrl || !this.isValidHttpUrl(fileUrl)) {
+    const inputFileUrl = this.normalizeOptionalText(input.fileUrl);
+    if (inputFileUrl && !this.isValidHttpUrl(inputFileUrl)) {
       throw new Error('Data room document URL must be a valid http/https link.');
+    }
+
+    const storageTarget = this.resolveStorageTargetFromInput({
+      fileUrl: inputFileUrl,
+      storageBucket: input.storageBucket,
+      storageObjectPath: input.storageObjectPath,
+    });
+    this.assertStorageTargetForStartupDocument({
+      target: storageTarget,
+      expectedBucket: STARTUP_DATA_ROOM_ASSET_BUCKET,
+      orgId: membership.orgId,
+      contextLabel: 'Data room document URL',
+    });
+    const fileUrl = (
+      inputFileUrl
+      ?? (
+        storageTarget
+          ? this.buildSupabasePublicStorageUrl(storageTarget.bucketId, storageTarget.objectPath)
+          : null
+      )
+    );
+    if (!fileUrl) {
+      throw new Error('Data room document URL or storage reference is required.');
     }
 
     const fileName = this.normalizeOptionalText(input.fileName);
@@ -534,6 +892,8 @@ export class StartupsService {
         document_type,
         title,
         file_url,
+        storage_bucket,
+        storage_object_path,
         file_name,
         file_size_bytes,
         content_type,
@@ -546,6 +906,8 @@ export class StartupsService {
         ${documentType}::public.startup_data_room_document_type,
         ${title},
         ${fileUrl},
+        ${storageTarget?.bucketId ?? null},
+        ${storageTarget?.objectPath ?? null},
         ${fileName},
         ${fileSizeBytes},
         ${contentType},
@@ -557,6 +919,8 @@ export class StartupsService {
       set
         title = excluded.title,
         file_url = excluded.file_url,
+        storage_bucket = excluded.storage_bucket,
+        storage_object_path = excluded.storage_object_path,
         file_name = excluded.file_name,
         file_size_bytes = excluded.file_size_bytes,
         content_type = excluded.content_type,
@@ -602,8 +966,6 @@ export class StartupsService {
     );
 
     const websiteUrl = this.normalizeOptionalText(input.websiteUrl);
-    const pitchDeckUrl = this.normalizeOptionalText(input.pitchDeckUrl);
-    const pitchDeckFileName = this.normalizeOptionalText(input.pitchDeckFileName);
     const teamOverview = this.normalizeOptionalText(input.teamOverview);
     const companyStage = this.normalizeOptionalText(input.companyStage);
     const targetMarket = this.normalizeOptionalText(input.targetMarket);
@@ -611,10 +973,46 @@ export class StartupsService {
     const tractionSummary = this.normalizeOptionalText(input.tractionSummary);
     const financialSummary = this.normalizeOptionalText(input.financialSummary);
     const legalSummary = this.normalizeOptionalText(input.legalSummary);
+
+    const pitchDeckUrl = this.normalizeOptionalText(input.pitchDeckUrl);
+    const pitchDeckFileName = this.normalizeOptionalText(input.pitchDeckFileName);
     const financialDocUrl = this.normalizeOptionalText(input.financialDocUrl);
     const financialDocFileName = this.normalizeOptionalText(input.financialDocFileName);
     const legalDocUrl = this.normalizeOptionalText(input.legalDocUrl);
     const legalDocFileName = this.normalizeOptionalText(input.legalDocFileName);
+
+    const shouldMutatePitchDeckDoc = (
+      input.pitchDeckUrl !== undefined
+      || input.pitchDeckFileName !== undefined
+      || input.pitchDeckFileSizeBytes !== undefined
+      || input.pitchDeckMediaKind !== undefined
+    );
+    const shouldMutateFinancialDoc = (
+      input.financialDocUrl !== undefined
+      || input.financialDocFileName !== undefined
+      || input.financialDocFileSizeBytes !== undefined
+    );
+    const shouldMutateLegalDoc = (
+      input.legalDocUrl !== undefined
+      || input.legalDocFileName !== undefined
+      || input.legalDocFileSizeBytes !== undefined
+    );
+
+    if (websiteUrl && !this.isValidHttpUrl(websiteUrl)) {
+      throw new Error('Website URL must be a valid http/https link');
+    }
+
+    if (shouldMutatePitchDeckDoc && pitchDeckUrl && !this.isValidHttpUrl(pitchDeckUrl)) {
+      throw new Error('Pitch deck URL must be a valid http/https link');
+    }
+
+    if (shouldMutateFinancialDoc && financialDocUrl && !this.isValidHttpUrl(financialDocUrl)) {
+      throw new Error('Financial document URL must be a valid http/https link');
+    }
+
+    if (shouldMutateLegalDoc && legalDocUrl && !this.isValidHttpUrl(legalDocUrl)) {
+      throw new Error('Legal document URL must be a valid http/https link');
+    }
 
     const pitchDeckMediaKindRaw = this.normalizeOptionalText(input.pitchDeckMediaKind)?.toLowerCase();
     let pitchDeckMediaKind: 'document' | 'video' | null = null;
@@ -664,10 +1062,6 @@ export class StartupsService {
       insert into public.startup_profiles as sp (
         startup_org_id,
         website_url,
-        pitch_deck_url,
-        pitch_deck_media_kind,
-        pitch_deck_file_name,
-        pitch_deck_file_size_bytes,
         team_overview,
         company_stage,
         founding_year,
@@ -677,22 +1071,12 @@ export class StartupsService {
         traction_summary,
         financial_summary,
         legal_summary,
-        financial_doc_url,
-        financial_doc_file_name,
-        financial_doc_file_size_bytes,
-        legal_doc_url,
-        legal_doc_file_name,
-        legal_doc_file_size_bytes,
         updated_by,
         updated_at
       )
       values (
         ${membership.orgId}::uuid,
         ${websiteUrl},
-        ${pitchDeckUrl},
-        ${pitchDeckMediaKind},
-        ${pitchDeckFileName},
-        ${pitchDeckFileSizeBytes},
         ${teamOverview},
         ${companyStage},
         ${foundingYear},
@@ -702,22 +1086,12 @@ export class StartupsService {
         ${tractionSummary},
         ${financialSummary},
         ${legalSummary},
-        ${financialDocUrl},
-        ${financialDocFileName},
-        ${financialDocFileSizeBytes},
-        ${legalDocUrl},
-        ${legalDocFileName},
-        ${legalDocFileSizeBytes},
         ${userId}::uuid,
         timezone('utc', now())
       )
       on conflict (startup_org_id) do update
       set
         website_url = excluded.website_url,
-        pitch_deck_url = excluded.pitch_deck_url,
-        pitch_deck_media_kind = excluded.pitch_deck_media_kind,
-        pitch_deck_file_name = excluded.pitch_deck_file_name,
-        pitch_deck_file_size_bytes = excluded.pitch_deck_file_size_bytes,
         team_overview = excluded.team_overview,
         company_stage = excluded.company_stage,
         founding_year = excluded.founding_year,
@@ -727,15 +1101,48 @@ export class StartupsService {
         traction_summary = excluded.traction_summary,
         financial_summary = excluded.financial_summary,
         legal_summary = excluded.legal_summary,
-        financial_doc_url = excluded.financial_doc_url,
-        financial_doc_file_name = excluded.financial_doc_file_name,
-        financial_doc_file_size_bytes = excluded.financial_doc_file_size_bytes,
-        legal_doc_url = excluded.legal_doc_url,
-        legal_doc_file_name = excluded.legal_doc_file_name,
-        legal_doc_file_size_bytes = excluded.legal_doc_file_size_bytes,
         updated_by = ${userId}::uuid,
         updated_at = timezone('utc', now())
     `;
+
+    await this.syncProfileDocument({
+      orgId: membership.orgId,
+      userId,
+      documentType: 'pitch_deck',
+      shouldMutate: shouldMutatePitchDeckDoc,
+      fileUrl: pitchDeckUrl,
+      fileName: pitchDeckFileName,
+      fileSizeBytes: pitchDeckFileSizeBytes,
+      contentType: (
+        pitchDeckMediaKind === 'video'
+          ? 'video/mp4'
+          : pitchDeckMediaKind === 'document'
+            ? 'application/pdf'
+            : null
+      ),
+    });
+
+    await this.syncProfileDocument({
+      orgId: membership.orgId,
+      userId,
+      documentType: 'financial_doc',
+      shouldMutate: shouldMutateFinancialDoc,
+      fileUrl: financialDocUrl,
+      fileName: financialDocFileName,
+      fileSizeBytes: financialDocFileSizeBytes,
+      contentType: null,
+    });
+
+    await this.syncProfileDocument({
+      orgId: membership.orgId,
+      userId,
+      documentType: 'legal_doc',
+      shouldMutate: shouldMutateLegalDoc,
+      fileUrl: legalDocUrl,
+      fileName: legalDocFileName,
+      fileSizeBytes: legalDocFileSizeBytes,
+      contentType: null,
+    });
 
     await this.invalidateWorkspaceBootstrapForOrg(membership.orgId);
   }
