@@ -7,7 +7,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
-import { SupabaseJwtGuard } from '../auth-integration/supabase-jwt.guard';
+import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import { OrganizationReadinessSummaryResult } from './readiness.types';
 import { ReadinessService } from './readiness.service';
 
@@ -16,7 +16,7 @@ interface RequestWithUser {
 }
 
 @Controller({ path: 'admin/readiness', version: '1' })
-@UseGuards(SupabaseJwtGuard)
+@UseGuards(BetterAuthJwtGuard)
 export class ReadinessController {
   constructor(private readonly readiness: ReadinessService) {}
 

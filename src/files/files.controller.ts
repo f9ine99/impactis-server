@@ -1,7 +1,9 @@
 import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
-import { SupabaseJwtGuard } from '../auth-integration/supabase-jwt.guard';
+import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import {
+  CreateOrganizationLogoUploadUrlInput,
+  CreateProfileAvatarUploadUrlInput,
   CreateStartupDataRoomUploadUrlInput,
   CreateStartupPitchDeckUploadUrlInput,
   CreateStartupReadinessUploadUrlInput,
@@ -14,7 +16,7 @@ interface RequestWithUser {
 }
 
 @Controller({ path: 'files', version: '1' })
-@UseGuards(SupabaseJwtGuard)
+@UseGuards(BetterAuthJwtGuard)
 export class FilesController {
   constructor(private readonly files: FilesService) {}
 
@@ -128,6 +130,86 @@ export class FilesController {
         error instanceof Error
           ? error.message
           : 'Unable to create startup data room upload URL right now.';
+      return {
+        success: false,
+        message,
+        uploadUrl: null,
+        publicUrl: null,
+        objectKey: null,
+      };
+    }
+  }
+
+  @Post('profile/avatar/upload-url')
+  async createProfileAvatarUploadUrl(
+    @Req() req: RequestWithUser,
+    @Body() input: CreateProfileAvatarUploadUrlInput,
+  ): Promise<StartupPitchDeckUploadUrlPayload> {
+    const user = req.user;
+    if (!user) {
+      return {
+        success: false,
+        message: 'Unauthorized',
+        uploadUrl: null,
+        publicUrl: null,
+        objectKey: null,
+      };
+    }
+
+    try {
+      const result = await this.files.createProfileAvatarUploadUrl(user.id, input);
+      return {
+        success: true,
+        message: null,
+        uploadUrl: result.uploadUrl,
+        publicUrl: result.publicUrl,
+        objectKey: result.objectKey,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Unable to create profile avatar upload URL right now.';
+      return {
+        success: false,
+        message,
+        uploadUrl: null,
+        publicUrl: null,
+        objectKey: null,
+      };
+    }
+  }
+
+  @Post('organizations/logo/upload-url')
+  async createOrganizationLogoUploadUrl(
+    @Req() req: RequestWithUser,
+    @Body() input: CreateOrganizationLogoUploadUrlInput,
+  ): Promise<StartupPitchDeckUploadUrlPayload> {
+    const user = req.user;
+    if (!user) {
+      return {
+        success: false,
+        message: 'Unauthorized',
+        uploadUrl: null,
+        publicUrl: null,
+        objectKey: null,
+      };
+    }
+
+    try {
+      const result = await this.files.createOrganizationLogoUploadUrl(user.id, input);
+      return {
+        success: true,
+        message: null,
+        uploadUrl: result.uploadUrl,
+        publicUrl: result.publicUrl,
+        objectKey: result.objectKey,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Unable to create organization logo upload URL right now.';
       return {
         success: false,
         message,

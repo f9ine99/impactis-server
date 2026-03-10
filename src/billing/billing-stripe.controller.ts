@@ -1,6 +1,6 @@
 import { Body, Controller, Headers, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
-import { SupabaseJwtGuard } from '../auth-integration/supabase-jwt.guard';
+import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import { BillingStripeService } from './billing-stripe.service';
 import {
   BillingStripeRedirectResult,
@@ -20,7 +20,7 @@ export class BillingStripeController {
   constructor(private readonly billingStripe: BillingStripeService) {}
 
   @Post('checkout-session')
-  @UseGuards(SupabaseJwtGuard)
+  @UseGuards(BetterAuthJwtGuard)
   async createCheckoutSession(
     @Req() req: RequestWithUser,
     @Body() input: CreateStripeCheckoutSessionInput,
@@ -56,7 +56,7 @@ export class BillingStripeController {
   }
 
   @Post('portal-session')
-  @UseGuards(SupabaseJwtGuard)
+  @UseGuards(BetterAuthJwtGuard)
   async createPortalSession(
     @Req() req: RequestWithUser,
     @Body() input: CreateStripePortalSessionInput,

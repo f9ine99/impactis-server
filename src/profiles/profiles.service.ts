@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateProfileInput } from './profiles.types';
 import { UpstashRedisCacheService } from '../cache/upstash-redis-cache.service';
+import { FilesService } from '../files/files.service';
 
 @Injectable()
 export class ProfilesService {
@@ -10,6 +11,7 @@ export class ProfilesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: UpstashRedisCacheService,
+    private readonly files: FilesService,
   ) {}
 
   private normalizeOptionalText(value: string | null | undefined): string | null {
@@ -69,6 +71,15 @@ export class ProfilesService {
   }
 
   async updateProfile(userId: string, input: UpdateProfileInput): Promise<void> {
+    const existingRows = await this.prisma.$queryRaw<Array<{ avatar_url: string | null }>>`
+      select avatar_url
+      from public.profiles
+      where id = ${userId}::uuid
+    `;
+    const previousAvatarUrl = existingRows[0]?.avatar_url
+      ? this.normalizeOptionalText(existingRows[0].avatar_url)
+      : null;
+
     const fullName = input.fullName?.trim() || null;
     const location = input.location?.trim() || null;
     const bio = input.bio?.trim() || null;
@@ -129,6 +140,13 @@ export class ProfilesService {
         preferred_contact_method = excluded.preferred_contact_method,
         updated_at = timezone('utc', now())
     `;
+
+    if (previousAvatarUrl && previousAvatarUrl !== avatarUrl) {
+      void this.files.deleteObjectByPublicUrl(previousAvatarUrl).catch((error) => {
+        const message = error instanceof Error ? error.message : 'Unknown R2 delete error';
+        this.logger.warn(`Failed to delete previous avatar from R2: ${message}`);
+      });
+    }
 
     void this.invalidateWorkspaceBootstrapForUserAndOrgMembers(userId).catch((error) => {
       const message = error instanceof Error ? error.message : 'Unknown cache invalidation error';

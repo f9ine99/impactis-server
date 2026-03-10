@@ -22,36 +22,11 @@ export class SessionsService {
     constructor(private readonly prisma: PrismaService) { }
 
     async getSessionsForUser(userId: string): Promise<ActiveSession[]> {
-        try {
-            const rows = await this.prisma.$queryRaw<SessionRow[]>(
-                `SELECT id, user_id, ip, user_agent, created_at, updated_at
-         FROM auth.sessions
-         WHERE user_id = $1
-         ORDER BY updated_at DESC`,
-                userId,
-            );
-
-            return rows.map((row) => ({
-                id: typeof row.id === 'string' ? row.id : String(row.id),
-                user_id: typeof row.user_id === 'string' ? row.user_id : String(row.user_id),
-                ip: row.ip ?? null,
-                user_agent: row.user_agent ?? null,
-                created_at:
-                    row.created_at instanceof Date
-                        ? row.created_at.toISOString()
-                        : String(row.created_at),
-                updated_at:
-                    row.updated_at instanceof Date
-                        ? row.updated_at.toISOString()
-                        : String(row.updated_at),
-            }));
-        } catch (error) {
-            this.logger.error(
-                `Failed to query auth.sessions for user ${userId}`,
-                error instanceof Error ? error.stack : String(error),
-            );
-            return [];
-        }
+    // Supabase-based auth.sessions table is not present in the current Postgres schema.
+    // Until Better Auth session storage is wired into this service, return an empty list
+    // so the API succeeds without noisy errors.
+    this.logger.debug(`Session listing is currently disabled for user ${userId}.`);
+    return [];
     }
 
     async revokeSession(userId: string, sessionId: string): Promise<DeleteResult> {

@@ -268,18 +268,12 @@ export class UpstashRedisCacheService {
   }
 
   private isEnabled(): boolean {
-    return !!this.restUrl && !!this.restToken;
+    // Cache is globally disabled; keep API surface but never talk to Upstash.
+    return false;
   }
 
   private warnDisabledIfNeeded(): void {
-    if (this.hasWarnedDisabled || this.isEnabled()) {
-      return;
-    }
-
-    this.hasWarnedDisabled = true;
-    this.logger.warn(
-      'Upstash Redis cache is disabled. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.',
-    );
+    // Intentionally no-op to avoid noisy logs when cache is disabled by design.
   }
 
   private prefixedKey(key: string): string {

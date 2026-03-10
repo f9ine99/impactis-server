@@ -4,6 +4,7 @@ import {
   IsEmail,
   IsIn,
   IsISO8601,
+  IsNumber,
   IsOptional,
   IsString,
   IsUrl,
@@ -164,4 +165,33 @@ export class UpdateOrganizationVerificationInput {
   @IsString()
   @MaxLength(1000)
   notes?: string | null;
+}
+
+export type InvestorProfileView = {
+  thesis: string | null;
+  sector_tags: string[];
+  check_size_min_usd: number | null;
+  check_size_max_usd: number | null;
+};
+
+export class UpdateInvestorProfileInput {
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  thesis?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @MaxLength(120, { each: true })
+  sectorTags?: string[] | null;
+
+  @IsOptional()
+  @IsNumber()
+  checkSizeMinUsd?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  checkSizeMaxUsd?: number | null;
 }

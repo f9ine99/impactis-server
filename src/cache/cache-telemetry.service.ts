@@ -13,14 +13,10 @@ export class CacheTelemetryService implements OnModuleInit, OnModuleDestroy {
   private flushTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly config: ConfigService) {
-    this.enabled = this.parseBoolean(
-      this.config.get<boolean>('cacheTelemetryEnabled'),
-      this.parseBooleanFromEnv(process.env.CACHE_TELEMETRY_ENABLED, false),
-    );
-    this.flushIntervalMs = this.parsePositiveInt(
-      this.config.get<number>('cacheTelemetryFlushIntervalMs'),
-      this.parsePositiveIntFromEnv(process.env.CACHE_TELEMETRY_FLUSH_INTERVAL_MS, 60000),
-    );
+    // Telemetry for cache is disabled by default; keep implementation for potential future use.
+    void this.config;
+    this.enabled = false;
+    this.flushIntervalMs = 60000;
   }
 
   onModuleInit(): void {

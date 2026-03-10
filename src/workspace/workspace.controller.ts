@@ -1,5 +1,5 @@
 import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
-import { SupabaseJwtGuard } from '../auth-integration/supabase-jwt.guard';
+import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import { WorkspaceService } from './workspace.service';
 import {
   WorkspaceBootstrapSnapshot,
@@ -15,7 +15,7 @@ interface RequestWithUser {
 }
 
 @Controller({ path: 'workspace', version: '1' })
-@UseGuards(SupabaseJwtGuard)
+@UseGuards(BetterAuthJwtGuard)
 export class WorkspaceController {
   constructor(private readonly workspaceService: WorkspaceService) {}
 

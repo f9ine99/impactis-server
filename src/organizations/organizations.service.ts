@@ -13,6 +13,8 @@ import {
   OrganizationVerificationOverviewView,
   OrganizationVerificationView,
   UpdateOrganizationIdentityInput,
+  InvestorProfileView,
+  UpdateInvestorProfileInput,
 } from './organizations.types';
 
 type PrimaryOrgMembershipContext = {
@@ -373,6 +375,127 @@ export class OrganizationsService {
     `;
 
     return rows[0]?.exists === true;
+  }
+
+  async getInvestorProfileForCurrentUser(userId: string): Promise<InvestorProfileView | null> {
+    const membership = await this.getPrimaryOrganizationMembershipByUserId(userId);
+    if (!membership || membership.organization.type !== 'investor') {
+      return null;
+    }
+
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        thesis: string | null;
+        sector_tags: string[] | null;
+        check_size_min_usd: bigint | number | null;
+        check_size_max_usd: bigint | number | null;
+      }>
+    >`
+      select
+        ip.thesis,
+        ip.sector_tags,
+        ip.check_size_min_usd,
+        ip.check_size_max_usd
+      from public.investor_profiles ip
+      where ip.investor_org_id = ${membership.org_id}::uuid
+      limit 1
+    `;
+
+    const row = rows[0];
+    if (!row) {
+      return null;
+    }
+
+    const minUsd = row.check_size_min_usd;
+    const maxUsd = row.check_size_max_usd;
+    return {
+      thesis: this.normalizeOptionalText(row.thesis),
+      sector_tags: Array.isArray(row.sector_tags) ? row.sector_tags : [],
+      check_size_min_usd:
+        minUsd != null ? (typeof minUsd === 'bigint' ? Number(minUsd) : minUsd) : null,
+      check_size_max_usd:
+        maxUsd != null ? (typeof maxUsd === 'bigint' ? Number(maxUsd) : maxUsd) : null,
+    };
+  }
+
+  async updateInvestorProfileForCurrentUser(
+    userId: string,
+    input: UpdateInvestorProfileInput,
+  ): Promise<InvestorProfileView> {
+    const membership = await this.getPrimaryOrganizationMembershipByUserId(userId);
+    if (!membership || membership.organization.type !== 'investor') {
+      throw new Error('Investor organization membership is required');
+    }
+
+    const thesis =
+      input.thesis !== undefined ? this.normalizeOptionalText(input.thesis) : undefined;
+    const sectorTags =
+      input.sectorTags !== undefined ? this.normalizeIndustryTags(input.sectorTags) : undefined;
+    const checkSizeMinUsd =
+      input.checkSizeMinUsd != null && Number.isFinite(input.checkSizeMinUsd)
+        ? BigInt(Math.trunc(Number(input.checkSizeMinUsd)))
+        : undefined;
+    const checkSizeMaxUsd =
+      input.checkSizeMaxUsd != null && Number.isFinite(input.checkSizeMaxUsd)
+        ? BigInt(Math.trunc(Number(input.checkSizeMaxUsd)))
+        : undefined;
+
+    const existingRows = await this.prisma.$queryRaw<
+      Array<{
+        thesis: string | null;
+        sector_tags: string[] | null;
+        check_size_min_usd: bigint | null;
+        check_size_max_usd: bigint | null;
+      }>
+    >`
+      select thesis, sector_tags, check_size_min_usd, check_size_max_usd
+      from public.investor_profiles
+      where investor_org_id = ${membership.org_id}::uuid
+      limit 1
+    `;
+
+    const existing = existingRows[0];
+    const newThesis = thesis !== undefined ? thesis : existing?.thesis ?? null;
+    const newSectorTags =
+      sectorTags !== undefined ? sectorTags : (Array.isArray(existing?.sector_tags) ? existing.sector_tags : []);
+    const newMinUsd = checkSizeMinUsd !== undefined ? checkSizeMinUsd : existing?.check_size_min_usd ?? null;
+    const newMaxUsd = checkSizeMaxUsd !== undefined ? checkSizeMaxUsd : existing?.check_size_max_usd ?? null;
+
+    await this.prisma.$queryRaw`
+      insert into public.investor_profiles (
+        investor_org_id,
+        thesis,
+        sector_tags,
+        check_size_min_usd,
+        check_size_max_usd,
+        updated_by,
+        updated_at
+      )
+      values (
+        ${membership.org_id}::uuid,
+        ${newThesis},
+        ${newSectorTags}::text[],
+        ${newMinUsd},
+        ${newMaxUsd},
+        ${userId}::uuid,
+        timezone('utc', now())
+      )
+      on conflict (investor_org_id) do update
+      set
+        thesis = excluded.thesis,
+        sector_tags = excluded.sector_tags,
+        check_size_min_usd = excluded.check_size_min_usd,
+        check_size_max_usd = excluded.check_size_max_usd,
+        updated_by = excluded.updated_by,
+        updated_at = timezone('utc', now())
+    `;
+
+    const updated = await this.getInvestorProfileForCurrentUser(userId);
+    if (!updated) {
+      throw new Error('Unable to read back investor profile');
+    }
+    await this.invalidateWorkspaceBootstrapForOrg(membership.org_id);
+    return updated;
   }
 
   async getOrganizationVerificationByOrgId(

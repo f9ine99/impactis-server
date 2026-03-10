@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { IsString, MinLength } from 'class-validator';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
-import { SupabaseJwtGuard } from '../auth-integration/supabase-jwt.guard';
+import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import {
   CreateOrganizationWithOwnerInput,
   CreateOrganizationInviteInput,
@@ -28,6 +28,8 @@ import {
   OrganizationVerificationView,
   UpdateOrganizationVerificationInput,
   UpdateOrganizationIdentityInput,
+  InvestorProfileView,
+  UpdateInvestorProfileInput,
 } from './organizations.types';
 import { OrganizationsService } from './organizations.service';
 
@@ -42,7 +44,7 @@ class AcceptOrganizationInviteInput {
 }
 
 @Controller({ path: 'organizations', version: '1' })
-@UseGuards(SupabaseJwtGuard)
+@UseGuards(BetterAuthJwtGuard)
 export class OrganizationsController {
   constructor(private readonly organizations: OrganizationsService) {}
 
@@ -151,6 +153,39 @@ export class OrganizationsController {
       return {
         hasMembership: false,
       };
+    }
+  }
+
+  @Get('me/investor-profile')
+  async getMyInvestorProfile(
+    @Req() req: RequestWithUser,
+  ): Promise<InvestorProfileView | null> {
+    const user = req.user;
+    if (!user) {
+      return null;
+    }
+
+    try {
+      return await this.organizations.getInvestorProfileForCurrentUser(user.id);
+    } catch {
+      return null;
+    }
+  }
+
+  @Patch('me/investor-profile')
+  async updateMyInvestorProfile(
+    @Req() req: RequestWithUser,
+    @Body() input: UpdateInvestorProfileInput,
+  ): Promise<InvestorProfileView | null> {
+    const user = req.user;
+    if (!user) {
+      return null;
+    }
+
+    try {
+      return await this.organizations.updateInvestorProfileForCurrentUser(user.id, input);
+    } catch {
+      return null;
     }
   }
 

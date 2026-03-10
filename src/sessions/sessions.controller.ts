@@ -1,5 +1,5 @@
 import { Controller, Delete, Get, Param, Req, UseGuards } from '@nestjs/common';
-import { SupabaseJwtGuard } from '../auth-integration/supabase-jwt.guard';
+import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
 import { SessionsService } from './sessions.service';
 import { SessionListResponse } from './sessions.types';
@@ -9,7 +9,7 @@ interface RequestWithUser {
 }
 
 @Controller({ path: 'sessions', version: '1' })
-@UseGuards(SupabaseJwtGuard)
+@UseGuards(BetterAuthJwtGuard)
 export class SessionsController {
     constructor(private readonly sessions: SessionsService) { }
 

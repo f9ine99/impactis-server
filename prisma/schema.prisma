@@ -1,12 +1,585 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["partialIndexes"]
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  schemas  = ["auth", "public", "storage"]
 }
 
-// The Impactis Postgres schema is currently managed by Supabase SQL migrations
-// in the Next.js repo (supabase/migrations). For the initial bootstrap of the
-// NestJS backend we rely primarily on raw SQL through a lightweight DB service.
+model users {
+  id                                            String                        @id @db.Uuid
+  email                                         String?
+  created_at                                    DateTime?                     @default(now()) @db.Timestamptz(6)
+  updated_at                                    DateTime?                     @default(now()) @db.Timestamptz(6)
+  raw_user_meta_data                            Json?
+  advisor_profiles                              advisor_profiles[]
+  investor_profiles                             investor_profiles[]
+  org_invites_org_invites_accepted_byTousers    org_invites[]                 @relation("org_invites_accepted_byTousers")
+  org_invites_org_invites_invited_byTousers     org_invites[]                 @relation("org_invites_invited_byTousers")
+  org_members_org_members_invited_byTousers     org_members[]                 @relation("org_members_invited_byTousers")
+  org_members_org_members_user_idTousers        org_members?                  @relation("org_members_user_idTousers")
+  org_status                                    org_status[]
+  org_verifications                             org_verifications[]
+  profiles                                      profiles?
+  startup_data_room_documents                   startup_data_room_documents[]
+  startup_posts_startup_posts_created_byTousers startup_posts[]               @relation("startup_posts_created_byTousers")
+  startup_posts_startup_posts_updated_byTousers startup_posts[]               @relation("startup_posts_updated_byTousers")
+  startup_profiles                              startup_profiles[]
+
+  @@schema("auth")
+}
+
+model migrations {
+  filename   String   @id
+  applied_at DateTime @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+
+  @@map("_migrations")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model advisor_profiles {
+  advisor_org_id   String        @id @db.Uuid
+  website_url      String?
+  linkedin_url     String?
+  bio              String?
+  expertise_tags   String[]      @default([])
+  years_experience Int?
+  created_at       DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at       DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_by       String?       @db.Uuid
+  organizations    organizations @relation(fields: [advisor_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users            users?        @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
+
+  @@index([updated_at(sort: Desc)])
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model billing_plan_catalog {
+  id                    String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  segment               org_type
+  plan_code             String
+  display_name          String
+  plan_tier             Int
+  is_default            Boolean                 @default(false)
+  is_active             Boolean                 @default(true)
+  is_public             Boolean                 @default(true)
+  metadata              Json                    @default("{}")
+  created_at            DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at            DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  billing_plan_features billing_plan_features[]
+  billing_plan_prices   billing_plan_prices[]
+  org_subscriptions     org_subscriptions[]
+  plan_capabilities     plan_capabilities[]
+
+  @@unique([segment, plan_code], map: "billing_plan_catalog_segment_code_key")
+  @@unique([segment, plan_tier], map: "billing_plan_catalog_segment_tier_key")
+  @@index([segment, is_active, is_public, plan_tier], map: "billing_plan_catalog_active_public_idx")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model billing_plan_features {
+  id                   String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  plan_id              String               @db.Uuid
+  feature_key          String
+  feature_label        String
+  feature_value_text   String?
+  limit_value          Int?
+  is_unlimited         Boolean              @default(false)
+  sort_order           Int                  @default(0)
+  metadata             Json                 @default("{}")
+  created_at           DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at           DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  billing_plan_catalog billing_plan_catalog @relation(fields: [plan_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([plan_id, feature_key], map: "billing_plan_features_plan_feature_key")
+  @@index([plan_id, sort_order, feature_key], map: "billing_plan_features_plan_sort_idx")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model billing_plan_prices {
+  id                   String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  plan_id              String               @db.Uuid
+  billing_interval     billing_interval
+  amount_cents         Int
+  currency             String               @default("USD")
+  created_at           DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at           DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  billing_plan_catalog billing_plan_catalog @relation(fields: [plan_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([plan_id, billing_interval], map: "billing_plan_prices_plan_interval_key")
+  @@index([billing_interval, amount_cents], map: "billing_plan_prices_interval_amount_idx")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model billing_webhook_events {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  provider     String   @default("stripe")
+  event_id     String
+  event_type   String
+  livemode     Boolean  @default(false)
+  payload      Json     @default("{}")
+  processed_at DateTime @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  created_at   DateTime @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at   DateTime @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+
+  @@unique([provider, event_id])
+  @@index([provider, processed_at(sort: Desc)], map: "billing_webhook_events_provider_processed_idx")
+  @@schema("public")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model capabilities {
+  code                       String                       @id
+  description                String
+  category                   String
+  created_at                 DateTime                     @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  org_capabilities_overrides org_capabilities_overrides[]
+  plan_capabilities          plan_capabilities[]
+
+  @@unique([category, code], map: "capabilities_category_code_idx")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model investor_profiles {
+  investor_org_id    String        @id @db.Uuid
+  website_url        String?
+  thesis             String?
+  stage_focus        String[]      @default([])
+  sector_tags        String[]      @default([])
+  check_size_min_usd BigInt?
+  check_size_max_usd BigInt?
+  created_at         DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at         DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_by         String?       @db.Uuid
+  organizations      organizations @relation(fields: [investor_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users              users?        @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
+
+  @@index([updated_at(sort: Desc)])
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model org_capabilities_overrides {
+  org_id          String        @db.Uuid
+  capability_code String
+  is_enabled      Boolean
+  source          String        @default("manual")
+  expires_at      DateTime?     @db.Timestamptz(6)
+  created_at      DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at      DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  capabilities    capabilities  @relation(fields: [capability_code], references: [code], onDelete: Cascade, onUpdate: NoAction)
+  organizations   organizations @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([org_id, capability_code])
+  @@index([capability_code, org_id], map: "org_capabilities_overrides_capability_idx")
+  @@index([org_id, expires_at], map: "org_capabilities_overrides_org_idx")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model org_feature_usage_counters {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  org_id        String        @db.Uuid
+  feature_key   String
+  period_start  DateTime      @db.Date
+  period_end    DateTime      @db.Date
+  usage_count   BigInt        @default(0)
+  metadata      Json          @default("{}")
+  created_at    DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at    DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations organizations @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([org_id, feature_key, period_start, period_end], map: "org_feature_usage_unique_period")
+  @@index([org_id, period_start(sort: Desc), period_end(sort: Desc)], map: "org_feature_usage_org_period_idx")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model org_invites {
+  id                                   String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  org_id                               String            @db.Uuid
+  invited_email                        String
+  member_role                          org_member_role   @default(member)
+  status                               org_invite_status @default(pending)
+  invited_by                           String            @db.Uuid
+  accepted_by                          String?           @db.Uuid
+  token_hash                           String            @unique
+  expires_at                           DateTime          @db.Timestamptz(6)
+  created_at                           DateTime          @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  responded_at                         DateTime?         @db.Timestamptz(6)
+  notes                                String?
+  users_org_invites_accepted_byTousers users?            @relation("org_invites_accepted_byTousers", fields: [accepted_by], references: [id], onUpdate: NoAction)
+  users_org_invites_invited_byTousers  users             @relation("org_invites_invited_byTousers", fields: [invited_by], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  organizations                        organizations     @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([org_id, status, created_at(sort: Desc)], map: "org_invites_org_status_created_idx")
+  @@schema("public")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model org_members {
+  org_id                              String                @db.Uuid
+  user_id                             String                @unique(map: "org_members_single_org_per_user_idx") @db.Uuid
+  member_role                         org_member_role       @default(member)
+  created_at                          DateTime              @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  status                              org_membership_status @default(active)
+  invited_by                          String?               @db.Uuid
+  joined_at                           DateTime              @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  users_org_members_invited_byTousers users?                @relation("org_members_invited_byTousers", fields: [invited_by], references: [id], onUpdate: NoAction)
+  organizations                       organizations         @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users_org_members_user_idTousers    users                 @relation("org_members_user_idTousers", fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([org_id, user_id])
+  @@index([org_id, status], map: "org_members_org_status_idx")
+  @@index([user_id, status, created_at], map: "org_members_user_status_created_idx")
+  @@index([user_id, status, created_at, org_id], map: "org_members_user_status_created_org_idx")
+  @@schema("public")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model org_status {
+  org_id        String               @id @db.Uuid
+  status        org_lifecycle_status @default(active)
+  updated_by    String?              @db.Uuid
+  reason        String?
+  created_at    DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at    DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations organizations        @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users         users?               @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model org_subscription_accounts {
+  org_id                String        @id @db.Uuid
+  billing_email         String?
+  provider_customer_ref String?
+  metadata              Json          @default("{}")
+  created_at            DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at            DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations         organizations @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model org_subscriptions {
+  id                        String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  org_id                    String                      @unique(map: "org_subscriptions_single_current_idx", where: raw("(status = ANY (ARRAY['trialing'::billing_subscription_status, 'active'::billing_subscription_status, 'past_due'::billing_subscription_status, 'paused'::billing_subscription_status]))")) @db.Uuid
+  plan_id                   String                      @db.Uuid
+  status                    billing_subscription_status @default(active)
+  billing_interval          billing_interval            @default(monthly)
+  started_at                DateTime                    @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  current_period_start      DateTime?                   @db.Timestamptz(6)
+  current_period_end        DateTime?                   @db.Timestamptz(6)
+  cancel_at_period_end      Boolean                     @default(false)
+  canceled_at               DateTime?                   @db.Timestamptz(6)
+  source                    String                      @default("manual")
+  external_subscription_ref String?
+  metadata                  Json                        @default("{}")
+  created_at                DateTime                    @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at                DateTime                    @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations             organizations               @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  billing_plan_catalog      billing_plan_catalog        @relation(fields: [plan_id], references: [id], onUpdate: NoAction)
+
+  @@index([org_id, created_at(sort: Desc)], map: "org_subscriptions_org_created_idx")
+  @@index([plan_id, status, current_period_end(sort: Desc)], map: "org_subscriptions_plan_status_idx")
+  @@schema("public")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model org_verifications {
+  org_id        String                  @id @db.Uuid
+  status        org_verification_status @default(unverified)
+  reviewed_by   String?                 @db.Uuid
+  reviewed_at   DateTime?               @db.Timestamptz(6)
+  notes         String?
+  created_at    DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at    DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations organizations           @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users         users?                  @relation(fields: [reviewed_by], references: [id], onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model organizations {
+  id                          String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  type                        org_type
+  name                        String
+  location                    String?
+  industry_tags               String[]                      @default([])
+  created_at                  DateTime                      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at                  DateTime                      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  logo_url                    String?
+  advisor_profiles            advisor_profiles?
+  investor_profiles           investor_profiles?
+  org_capabilities_overrides  org_capabilities_overrides[]
+  org_feature_usage_counters  org_feature_usage_counters[]
+  org_invites                 org_invites[]
+  org_members                 org_members[]
+  org_status                  org_status?
+  org_subscription_accounts   org_subscription_accounts?
+  org_subscriptions           org_subscriptions?
+  org_verifications           org_verifications?
+  startup_data_room_documents startup_data_room_documents[]
+  startup_posts               startup_posts?
+  startup_profiles            startup_profiles?
+
+  @@index([type, created_at(sort: Desc)], map: "organizations_type_created_idx")
+  @@schema("public")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model plan_capabilities {
+  plan_id              String               @db.Uuid
+  capability_code      String
+  is_enabled           Boolean              @default(true)
+  created_at           DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  capabilities         capabilities         @relation(fields: [capability_code], references: [code], onDelete: Cascade, onUpdate: NoAction)
+  billing_plan_catalog billing_plan_catalog @relation(fields: [plan_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([plan_id, capability_code])
+  @@index([capability_code, plan_id], map: "plan_capabilities_capability_idx")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model profiles {
+  id                       String    @id @db.Uuid
+  full_name                String?
+  location                 String?
+  bio                      String?
+  avatar_url               String?
+  created_at               DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at               DateTime? @default(now()) @db.Timestamptz(6)
+  phone                    String?
+  headline                 String?
+  website_url              String?
+  linkedin_url             String?
+  timezone_name            String?
+  preferred_contact_method String?
+  users                    users     @relation(fields: [id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model startup_data_room_documents {
+  id                  String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  startup_org_id      String                          @db.Uuid
+  document_type       startup_data_room_document_type
+  title               String
+  file_url            String?
+  file_name           String?
+  file_size_bytes     BigInt?
+  content_type        String?
+  summary             String?
+  uploaded_by         String?                         @db.Uuid
+  created_at          DateTime                        @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at          DateTime                        @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  storage_bucket      String?
+  storage_object_path String?
+  organizations       organizations                   @relation(fields: [startup_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users               users?                          @relation(fields: [uploaded_by], references: [id], onUpdate: NoAction)
+
+  @@unique([startup_org_id, document_type], map: "startup_data_room_documents_org_type_unique")
+  @@index([startup_org_id, updated_at(sort: Desc)], map: "startup_data_room_documents_org_updated_idx")
+  @@index([storage_bucket, storage_object_path], map: "startup_data_room_documents_storage_idx", where: raw("((storage_bucket IS NOT NULL) AND (storage_object_path IS NOT NULL))"))
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model startup_posts {
+  id                                    String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  startup_org_id                        String              @unique @db.Uuid
+  title                                 String
+  summary                               String
+  stage                                 String?
+  location                              String?
+  industry_tags                         String[]            @default([])
+  status                                startup_post_status @default(draft)
+  published_at                          DateTime?           @db.Timestamptz(6)
+  created_by                            String?             @db.Uuid
+  updated_by                            String?             @db.Uuid
+  created_at                            DateTime            @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at                            DateTime            @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  users_startup_posts_created_byTousers users?              @relation("startup_posts_created_byTousers", fields: [created_by], references: [id], onUpdate: NoAction)
+  organizations                         organizations       @relation(fields: [startup_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users_startup_posts_updated_byTousers users?              @relation("startup_posts_updated_byTousers", fields: [updated_by], references: [id], onUpdate: NoAction)
+
+  @@index([industry_tags], type: Gin)
+  @@index([status, published_at(sort: Desc)], map: "startup_posts_status_published_idx")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model startup_profiles {
+  startup_org_id    String        @id @db.Uuid
+  website_url       String?
+  team_overview     String?
+  created_at        DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at        DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_by        String?       @db.Uuid
+  company_stage     String?
+  founding_year     Int?
+  team_size         Int?
+  target_market     String?
+  business_model    String?
+  traction_summary  String?
+  financial_summary String?
+  legal_summary     String?
+  organizations     organizations @relation(fields: [startup_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users             users?        @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
+
+  @@index([updated_at(sort: Desc)])
+  @@schema("public")
+}
+
+model buckets {
+  id                 String    @id
+  name               String
+  public             Boolean?  @default(false)
+  created_at         DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime? @default(now()) @db.Timestamptz(6)
+  file_size_limit    BigInt?
+  allowed_mime_types String[]
+
+  @@schema("storage")
+}
+
+model objects {
+  id               String    @id @db.Uuid
+  bucket_id        String?
+  name             String?
+  owner            String?   @db.Uuid
+  created_at       DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime? @default(now()) @db.Timestamptz(6)
+  last_accessed_at DateTime? @default(now()) @db.Timestamptz(6)
+  metadata         Json?
+
+  @@schema("storage")
+}
+
+enum billing_interval {
+  monthly
+  annual
+
+  @@schema("public")
+}
+
+enum billing_subscription_status {
+  trialing
+  active
+  past_due
+  paused
+  canceled
+  incomplete
+
+  @@schema("public")
+}
+
+enum org_invite_status {
+  pending
+  accepted
+  expired
+  cancelled
+  revoked
+
+  @@schema("public")
+}
+
+enum org_lifecycle_status {
+  active
+  suspended
+  deleted
+
+  @@schema("public")
+}
+
+enum org_member_role {
+  owner
+  admin
+  member
+
+  @@schema("public")
+}
+
+enum org_membership_status {
+  pending
+  active
+  left
+  removed
+  expired
+  cancelled
+
+  @@schema("public")
+}
+
+enum org_type {
+  startup
+  investor
+  advisor
+
+  @@schema("public")
+}
+
+enum org_verification_status {
+  unverified
+  pending
+  approved
+  rejected
+
+  @@schema("public")
+}
+
+enum startup_data_room_document_type {
+  pitch_deck
+  financial_model
+  cap_table
+  traction_metrics
+  legal_company_docs
+  incorporation_docs
+  customer_contracts_summaries
+  term_sheet_drafts
+  financial_doc
+  legal_doc
+
+  @@schema("public")
+}
+
+enum startup_post_status {
+  draft
+  published
+
+  @@schema("public")
+}

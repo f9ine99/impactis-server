@@ -25,13 +25,10 @@ const STARTUP_DATA_ROOM_DOCUMENT_TYPE_SET = new Set<StartupDataRoomDocumentType>
   STARTUP_DATA_ROOM_DOCUMENT_TYPES,
 );
 const STARTUP_DATA_ROOM_ASSET_BUCKET = 'startup-data-room-assets';
-const SUPABASE_PUBLIC_STORAGE_OBJECT_BASE_PATH = '/storage/v1/object/public';
-const SUPABASE_PUBLIC_STORAGE_OBJECT_PREFIX = `${SUPABASE_PUBLIC_STORAGE_OBJECT_BASE_PATH}/`;
 
 @Injectable()
 export class StartupsService {
   private readonly logger = new Logger(StartupsService.name);
-  private readonly supabaseStoragePublicBaseUrl: string | null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -39,12 +36,7 @@ export class StartupsService {
     private readonly cache: UpstashRedisCacheService,
     private readonly config: ConfigService,
     private readonly capabilities: CapabilitiesService,
-  ) {
-    const supabaseUrlRaw = this.normalizeOptionalText(this.config.get<string>('supabaseUrl'));
-    this.supabaseStoragePublicBaseUrl = supabaseUrlRaw
-      ? `${supabaseUrlRaw.replace(/\/+$/, '')}${SUPABASE_PUBLIC_STORAGE_OBJECT_BASE_PATH}`
-      : null;
-  }
+  ) {}
 
   private normalizeOptionalText(value: string | null | undefined): string | null {
     if (typeof value !== 'string') {
@@ -83,14 +75,6 @@ export class StartupsService {
     return trimmed.length > 0 ? trimmed : null;
   }
 
-  private buildSupabasePublicStorageUrl(bucketId: string, objectPath: string): string | null {
-    if (!this.supabaseStoragePublicBaseUrl) {
-      return null;
-    }
-
-    return `${this.supabaseStoragePublicBaseUrl}/${bucketId}/${objectPath}`;
-  }
-
   private resolveDocumentPublicUrl(
     fileUrl: string | null | undefined,
     storageBucket: string | null | undefined,
@@ -101,13 +85,10 @@ export class StartupsService {
       return normalizedFileUrl;
     }
 
-    const bucketId = this.normalizeOptionalText(storageBucket);
-    const objectPath = this.normalizeOptionalText(storageObjectPath);
-    if (!bucketId || !objectPath) {
-      return null;
-    }
-
-    return this.buildSupabasePublicStorageUrl(bucketId, objectPath);
+    // Legacy Supabase storage paths are no longer supported; without a direct URL we return null.
+    void storageBucket;
+    void storageObjectPath;
+    return null;
   }
 
   private normalizeTextArray(value: unknown): string[] {
@@ -257,36 +238,6 @@ export class StartupsService {
     }
   }
 
-  private resolveSupabasePublicStorageTarget(
-    fileUrl: string,
-  ): { bucketId: string; objectPath: string } | null {
-    try {
-      const parsed = new URL(fileUrl);
-      const pathname = parsed.pathname ?? '';
-      if (!pathname.startsWith(SUPABASE_PUBLIC_STORAGE_OBJECT_PREFIX)) {
-        return null;
-      }
-
-      const remainder = decodeURIComponent(
-        pathname.slice(SUPABASE_PUBLIC_STORAGE_OBJECT_PREFIX.length),
-      ).trim();
-      if (!remainder) {
-        return null;
-      }
-
-      const [bucketIdRaw, ...pathParts] = remainder.split('/');
-      const bucketId = this.normalizeOptionalText(bucketIdRaw);
-      const objectPath = this.normalizeOptionalText(pathParts.join('/'));
-      if (!bucketId || !objectPath) {
-        return null;
-      }
-
-      return { bucketId, objectPath };
-    } catch {
-      return null;
-    }
-  }
-
   private resolveStorageTargetFromInput(input: {
     fileUrl: string | null;
     storageBucket?: string | null;
@@ -305,10 +256,6 @@ export class StartupsService {
         bucketId: storageBucket,
         objectPath: storageObjectPath,
       };
-    }
-
-    if (fileUrl) {
-      return this.resolveSupabasePublicStorageTarget(fileUrl);
     }
 
     return null;

@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
-import { SupabaseJwtGuard } from '../auth-integration/supabase-jwt.guard';
+import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import {
   StartupDataRoomDocumentView,
   StartupMutationResult,
@@ -18,7 +18,7 @@ interface RequestWithUser {
 }
 
 @Controller({ path: 'startups', version: '1' })
-@UseGuards(SupabaseJwtGuard)
+@UseGuards(BetterAuthJwtGuard)
 export class StartupsController {
   constructor(private readonly startups: StartupsService) {}
 

@@ -113,7 +113,6 @@ const WORKSPACE_SETTINGS_SECTIONS = [
 type WorkspaceSettingsSection = (typeof WORKSPACE_SETTINGS_SECTIONS)[number];
 
 const WORKSPACE_SETTINGS_SECTION_SET = new Set<WorkspaceSettingsSection>(WORKSPACE_SETTINGS_SECTIONS);
-const SUPABASE_PUBLIC_STORAGE_OBJECT_BASE_PATH = '/storage/v1/object/public';
 
 @Injectable()
 export class WorkspaceService {
@@ -137,15 +136,6 @@ export class WorkspaceService {
     return trimmed.length > 0 ? trimmed : null;
   }
 
-  private buildSupabasePublicStorageUrl(bucketId: string, objectPath: string): string | null {
-    const supabaseUrl = this.normalizeOptionalText(this.config.get<string>('supabaseUrl'));
-    if (!supabaseUrl) {
-      return null;
-    }
-
-    return `${supabaseUrl.replace(/\/+$/, '')}${SUPABASE_PUBLIC_STORAGE_OBJECT_BASE_PATH}/${bucketId}/${objectPath}`;
-  }
-
   private resolveDocumentPublicUrl(
     fileUrl: string | null | undefined,
     storageBucket: string | null | undefined,
@@ -156,13 +146,10 @@ export class WorkspaceService {
       return normalizedFileUrl;
     }
 
-    const bucketId = this.normalizeOptionalText(storageBucket);
-    const objectPath = this.normalizeOptionalText(storageObjectPath);
-    if (!bucketId || !objectPath) {
-      return null;
-    }
-
-    return this.buildSupabasePublicStorageUrl(bucketId, objectPath);
+    // Legacy Supabase storage paths are no longer supported; without a direct URL we return null.
+    void storageBucket;
+    void storageObjectPath;
+    return null;
   }
 
   private normalizeInteger(value: unknown): number {

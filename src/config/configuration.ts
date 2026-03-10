@@ -19,9 +19,8 @@ export default () => ({
   port: parseInt(process.env.PORT ?? '4000', 10),
   webOrigin: process.env.WEB_ORIGIN,
   databaseUrl: process.env.DATABASE_URL,
-  supabaseJwtSecret: process.env.SUPABASE_JWT_SECRET,
-  supabaseUrl: process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL,
-  supabaseAnonKey: process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  betterAuthJwksUrl: process.env.BETTER_AUTH_JWKS_URL,
+  betterAuthIssuer: process.env.BETTER_AUTH_ISSUER,
   dbQueryTelemetryEnabled: parseBoolean(process.env.DB_QUERY_TELEMETRY_ENABLED, false),
   dbQueryTelemetryFlushIntervalMs: parseInt(
     process.env.DB_QUERY_TELEMETRY_FLUSH_INTERVAL_MS ?? '60000',

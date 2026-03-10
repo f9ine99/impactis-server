@@ -1,8 +1,10 @@
 import { ForbiddenException, Injectable, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
+  CreateOrganizationLogoUploadUrlInput,
+  CreateProfileAvatarUploadUrlInput,
   CreateStartupDataRoomUploadUrlInput,
   CreateStartupPitchDeckUploadUrlInput,
   CreateStartupReadinessUploadUrlInput,
@@ -88,6 +90,85 @@ export class FilesService {
     }
   }
 
+  private buildPublicUrl(objectKey: string): string | null {
+    if (!this.publicBaseUrl) {
+      return null;
+    }
+
+    return `${this.publicBaseUrl.replace(/\/+$/, '')}/${objectKey}`;
+  }
+
+  private extractObjectKeyFromPublicUrl(publicUrl: string): string | null {
+    if (!this.publicBaseUrl) {
+      return null;
+    }
+
+    try {
+      const base = this.publicBaseUrl.replace(/\/+$/, '');
+      const baseUrl = new URL(base);
+      const targetUrl = new URL(publicUrl);
+
+      if (baseUrl.origin !== targetUrl.origin) {
+        return null;
+      }
+
+      const basePath = baseUrl.pathname.replace(/\/+$/, '');
+      let targetPath = targetUrl.pathname;
+
+      if (basePath && !targetPath.startsWith(basePath)) {
+        return null;
+      }
+
+      if (basePath && targetPath.startsWith(basePath)) {
+        targetPath = targetPath.slice(basePath.length);
+      }
+
+      targetPath = targetPath.replace(/^\/+/, '');
+
+      return targetPath.length > 0 ? targetPath : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async deleteObjectByPublicUrl(publicUrl: string): Promise<void> {
+    if (!this.s3 || !this.bucketName) {
+      return;
+    }
+
+    const objectKey = this.extractObjectKeyFromPublicUrl(publicUrl);
+    if (!objectKey) {
+      return;
+    }
+
+    try {
+      await this.s3.send(
+        new DeleteObjectCommand({
+          Bucket: this.bucketName,
+          Key: objectKey,
+        }),
+      );
+    } catch {
+      // Best-effort cleanup; failures are non-fatal.
+      return;
+    }
+  }
+
+  private assertImageContentType(contentType: string): void {
+    const allowed = new Set([
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'image/gif',
+      'image/svg+xml',
+    ]);
+    if (!allowed.has(contentType)) {
+      throw new InternalServerErrorException(
+        'Image must be JPG, PNG, WEBP, GIF, or SVG.',
+      );
+    }
+  }
+
   async createStartupReadinessUploadUrl(
     userId: string,
     input: CreateStartupReadinessUploadUrlInput,
@@ -139,7 +220,9 @@ export class FilesService {
     const safeOrgId = orgId;
     const now = Date.now();
     const extension = this.resolveExtension(input.fileName, input.contentType, input.assetType);
-    const objectKey = `startups/${safeOrgId}/readiness/${input.assetType}-${now}.${extension}`;
+    const logicalBucket = 'startup-data-room-assets';
+    const relativePath = `${safeOrgId}/readiness/${input.assetType}-${now}.${extension}`;
+    const objectKey = `${logicalBucket}/${relativePath}`;
 
     const putCommand = new PutObjectCommand({
       Bucket: this.bucketName,
@@ -149,10 +232,7 @@ export class FilesService {
 
     const uploadUrl = await getSignedUrl(this.s3, putCommand, { expiresIn: 15 * 60 });
 
-    const publicUrl =
-      this.publicBaseUrl != null
-        ? `${this.publicBaseUrl.replace(/\/+$/, '')}/${objectKey}`
-        : null;
+    const publicUrl = this.buildPublicUrl(objectKey);
 
     return { uploadUrl, publicUrl, objectKey };
   }
@@ -213,7 +293,9 @@ export class FilesService {
       input.contentType,
       input.documentType,
     );
-    const objectKey = `startups/${safeOrgId}/data-room/${input.documentType}-${now}.${extension}`;
+    const logicalBucket = 'startup-data-room-assets';
+    const relativePath = `${safeOrgId}/data-room/${input.documentType}-${now}.${extension}`;
+    const objectKey = `${logicalBucket}/${relativePath}`;
 
     const putCommand = new PutObjectCommand({
       Bucket: this.bucketName,
@@ -223,10 +305,84 @@ export class FilesService {
 
     const uploadUrl = await getSignedUrl(this.s3, putCommand, { expiresIn: 15 * 60 });
 
-    const publicUrl =
-      this.publicBaseUrl != null
-        ? `${this.publicBaseUrl.replace(/\/+$/, '')}/${objectKey}`
-        : null;
+    const publicUrl = this.buildPublicUrl(objectKey);
+
+    return { uploadUrl, publicUrl, objectKey };
+  }
+
+  async createProfileAvatarUploadUrl(
+    userId: string,
+    input: CreateProfileAvatarUploadUrlInput,
+  ): Promise<{ uploadUrl: string; publicUrl: string | null; objectKey: string }> {
+    if (!this.s3 || !this.bucketName) {
+      throw new InternalServerErrorException('R2 storage is not configured');
+    }
+
+    const normalizedUserId = this.normalizeOptionalText(userId);
+    if (!normalizedUserId) {
+      throw new InternalServerErrorException('User id is required.');
+    }
+
+    if (input.contentLength <= 0 || input.contentLength > 2 * 1024 * 1024) {
+      throw new InternalServerErrorException('Profile avatar must be 2MB or smaller.');
+    }
+
+    this.assertImageContentType(input.contentType);
+
+    const now = Date.now();
+    const extension = this.resolveImageExtension(input.fileName, input.contentType);
+    const logicalBucket = 'profile-avatars';
+    const relativePath = `${normalizedUserId}/avatar-${now}.${extension}`;
+    const objectKey = `${logicalBucket}/${relativePath}`;
+
+    const putCommand = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: objectKey,
+      ContentType: input.contentType,
+    });
+
+    const uploadUrl = await getSignedUrl(this.s3, putCommand, { expiresIn: 15 * 60 });
+    const publicUrl = this.buildPublicUrl(objectKey);
+
+    return { uploadUrl, publicUrl, objectKey };
+  }
+
+  async createOrganizationLogoUploadUrl(
+    userId: string,
+    input: CreateOrganizationLogoUploadUrlInput,
+  ): Promise<{ uploadUrl: string; publicUrl: string | null; objectKey: string }> {
+    if (!this.s3 || !this.bucketName) {
+      throw new InternalServerErrorException('R2 storage is not configured');
+    }
+
+    const orgId = this.normalizeOptionalText(input.orgId);
+    if (!orgId) {
+      throw new InternalServerErrorException('Organization id is required.');
+    }
+
+    // Reuse startup upload access check: owners/admins of the org.
+    await this.assertStartupUploadAccess(userId, orgId);
+
+    if (input.contentLength <= 0 || input.contentLength > 2 * 1024 * 1024) {
+      throw new InternalServerErrorException('Organization logo must be 2MB or smaller.');
+    }
+
+    this.assertImageContentType(input.contentType);
+
+    const now = Date.now();
+    const extension = this.resolveImageExtension(input.fileName, input.contentType);
+    const logicalBucket = 'organization-logos';
+    const relativePath = `${orgId}/logo-${now}.${extension}`;
+    const objectKey = `${logicalBucket}/${relativePath}`;
+
+    const putCommand = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: objectKey,
+      ContentType: input.contentType,
+    });
+
+    const uploadUrl = await getSignedUrl(this.s3, putCommand, { expiresIn: 15 * 60 });
+    const publicUrl = this.buildPublicUrl(objectKey);
 
     return { uploadUrl, publicUrl, objectKey };
   }
@@ -273,5 +429,21 @@ export class FilesService {
     }
 
     return this.resolveExtension(fileName, contentType, 'financial_doc');
+  }
+
+  private resolveImageExtension(fileName: string, contentType: string): string {
+    if (contentType === 'image/jpeg') return 'jpg';
+    if (contentType === 'image/png') return 'png';
+    if (contentType === 'image/webp') return 'webp';
+    if (contentType === 'image/gif') return 'gif';
+    if (contentType === 'image/svg+xml') return 'svg';
+
+    const parts = fileName.split('.');
+    const ext = parts.length > 1 ? parts.pop()?.trim().toLowerCase() : null;
+    if (ext && /^[a-z0-9]+$/.test(ext)) {
+      return ext;
+    }
+
+    return 'png';
   }
 }

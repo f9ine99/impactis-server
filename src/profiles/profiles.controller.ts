@@ -1,5 +1,5 @@
 import { Body, Controller, Patch, Req, UseGuards } from '@nestjs/common';
-import { SupabaseJwtGuard } from '../auth-integration/supabase-jwt.guard';
+import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
 import { ProfileMutationResult, UpdateProfileInput } from './profiles.types';
 import { ProfilesService } from './profiles.service';
@@ -9,7 +9,7 @@ interface RequestWithUser {
 }
 
 @Controller({ path: 'profiles', version: '1' })
-@UseGuards(SupabaseJwtGuard)
+@UseGuards(BetterAuthJwtGuard)
 export class ProfilesController {
   constructor(private readonly profiles: ProfilesService) {}
 

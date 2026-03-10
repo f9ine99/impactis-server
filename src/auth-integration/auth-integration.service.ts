@@ -1,5 +1,4 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 
 export interface AuthenticatedUser {
@@ -10,10 +9,7 @@ export interface AuthenticatedUser {
 
 @Injectable()
 export class AuthIntegrationService {
-  constructor(
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
-  ) { }
+  constructor(private readonly jwtService: JwtService) {}
 
   async verifyAuthorizationHeader(authHeader?: string | null): Promise<AuthenticatedUser> {
     if (!authHeader?.startsWith('Bearer ')) {
@@ -41,53 +37,8 @@ export class AuthIntegrationService {
         raw: decoded,
       };
     } catch {
-      return this.verifyTokenViaSupabaseAuth(token);
-    }
-  }
-
-  private async verifyTokenViaSupabaseAuth(token: string): Promise<AuthenticatedUser> {
-    const supabaseUrl = this.configService.get<string>('supabaseUrl')?.trim();
-    const supabaseAnonKey = this.configService.get<string>('supabaseAnonKey')?.trim();
-
-    if (!supabaseUrl || !supabaseAnonKey) {
-      throw new UnauthorizedException('Invalid or expired Supabase token');
-    }
-
-    const authUrl = `${supabaseUrl.replace(/\/+$/, '')}/auth/v1/user`;
-
-    try {
-      const response = await fetch(authUrl, {
-        method: 'GET',
-        headers: {
-          authorization: `Bearer ${token}`,
-          apikey: supabaseAnonKey,
-        },
-      });
-
-      if (!response.ok) {
-        throw new UnauthorizedException('Invalid or expired Supabase token');
-      }
-
-      const payload = (await response.json()) as Record<string, unknown>;
-      const id = typeof payload['id'] === 'string' ? payload['id'] : null;
-      if (!id) {
-        throw new UnauthorizedException('Invalid or expired Supabase token');
-      }
-
-      // If API verification succeeds, we know the token is valid.
-      // We can decode it to get session-specific claims like 'sid'.
-      const decoded = this.jwtService.decode(token) as Record<string, unknown> | null;
-
-      return {
-        id,
-        email: typeof payload['email'] === 'string' ? payload['email'] : undefined,
-        raw: {
-          ...payload,
-          ...(decoded || {}),
-        },
-      };
-    } catch {
-      throw new UnauthorizedException('Invalid or expired Supabase token');
+      // Any verification error means the token is invalid or expired
+      throw new UnauthorizedException('Invalid or expired auth token');
     }
   }
 }

@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Patch, Query, Req, UseGuards } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
-import { SupabaseJwtGuard } from '../auth-integration/supabase-jwt.guard';
+import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import { BillingService } from './billing.service';
 import {
   BillingMeView,
@@ -15,7 +15,7 @@ interface RequestWithUser {
 }
 
 @Controller({ path: 'billing', version: '1' })
-@UseGuards(SupabaseJwtGuard)
+@UseGuards(BetterAuthJwtGuard)
 export class BillingController {
   constructor(private readonly billing: BillingService) {}
 

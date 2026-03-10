@@ -29,6 +29,37 @@ export class CreateStartupPitchDeckUploadUrlInput {
   contentLength!: number;
 }
 
+export class CreateProfileAvatarUploadUrlInput {
+  @IsString()
+  @MaxLength(255)
+  fileName!: string;
+
+  @IsMimeType()
+  contentType!: string;
+
+  @IsInt()
+  @Min(1)
+  @Max(2 * 1024 * 1024)
+  contentLength!: number;
+}
+
+export class CreateOrganizationLogoUploadUrlInput {
+  @IsUUID()
+  orgId!: string;
+
+  @IsString()
+  @MaxLength(255)
+  fileName!: string;
+
+  @IsMimeType()
+  contentType!: string;
+
+  @IsInt()
+  @Min(1)
+  @Max(2 * 1024 * 1024)
+  contentLength!: number;
+}
+
 export class CreateStartupReadinessUploadUrlInput {
   @IsUUID()
   orgId!: string;
