@@ -10,6 +10,7 @@ import {
   StartupDataRoomDocumentView,
   StartupPostView,
   StartupProfileView,
+  StartupPublicDiscoveryProfileView,
   StartupReadinessView,
   UpsertStartupDataRoomDocumentInput,
   UpdateStartupPostInput,
@@ -75,6 +76,20 @@ export class StartupsService {
     return trimmed.length > 0 ? trimmed : null;
   }
 
+  /** Build public URL for R2 storage from logical bucket + object path (object key = bucketId/objectPath). */
+  private buildSupabasePublicStorageUrl(bucketId: string, objectPath: string): string | null {
+    const base = this.config.get<string>('r2PublicBaseUrl');
+    if (!base || typeof base !== 'string') {
+      return null;
+    }
+    const normalizedBase = base.replace(/\/+$/, '');
+    const normalizedPath = [bucketId, objectPath]
+      .map((p) => p.replace(/^\/+|\/+$/g, ''))
+      .filter(Boolean)
+      .join('/');
+    return normalizedPath ? `${normalizedBase}/${normalizedPath}` : null;
+  }
+
   private resolveDocumentPublicUrl(
     fileUrl: string | null | undefined,
     storageBucket: string | null | undefined,
@@ -84,10 +99,9 @@ export class StartupsService {
     if (normalizedFileUrl) {
       return normalizedFileUrl;
     }
-
-    // Legacy Supabase storage paths are no longer supported; without a direct URL we return null.
-    void storageBucket;
-    void storageObjectPath;
+    if (storageBucket && storageObjectPath) {
+      return this.buildSupabasePublicStorageUrl(storageBucket, storageObjectPath);
+    }
     return null;
   }
 
@@ -243,7 +257,6 @@ export class StartupsService {
     storageBucket?: string | null;
     storageObjectPath?: string | null;
   }): { bucketId: string; objectPath: string } | null {
-    const fileUrl = this.normalizeOptionalText(input.fileUrl);
     const storageBucket = this.normalizeOptionalText(input.storageBucket);
     const storageObjectPath = this.normalizeOptionalText(input.storageObjectPath);
 
@@ -633,6 +646,147 @@ export class StartupsService {
     };
   }
 
+  /** For investor/advisor: get a startup's public profile + post + data room (only if published). */
+  async getStartupPublicProfileForDiscovery(
+    userId: string,
+    startupOrgId: string,
+  ): Promise<StartupPublicDiscoveryProfileView | null> {
+    const orgId = this.normalizeUuid(startupOrgId);
+    if (!orgId) {
+      return null;
+    }
+
+    const requesterOrgRows = await this.prisma.$queryRaw<
+      Array<{ org_type: string }>
+    >`
+      select o.type::text as org_type
+      from public.org_members om
+      join public.organizations o on o.id = om.org_id
+      left join public.org_status s on s.org_id = o.id
+      where om.user_id = ${userId}::uuid
+        and om.status = 'active'
+        and coalesce(s.status::text, 'active') = 'active'
+      order by om.created_at asc
+      limit 1
+    `;
+    const requesterOrgType = this.normalizeOptionalText(requesterOrgRows[0]?.org_type)?.toLowerCase();
+    if (requesterOrgType !== 'investor' && requesterOrgType !== 'advisor') {
+      throw new Error('Only investors and advisors can view startup discovery profiles.');
+    }
+
+    const startupRows = await this.prisma.$queryRaw<
+      Array<{
+        startup_org_id: string;
+        startup_org_name: string;
+        startup_logo_url: string | null;
+        post_title: string;
+        post_summary: string;
+        post_stage: string | null;
+        post_location: string | null;
+        post_industry_tags: string[] | null;
+        post_need_advisor: boolean | null;
+        profile_website_url: string | null;
+        profile_team_overview: string | null;
+        profile_company_stage: string | null;
+        profile_founding_year: number | null;
+        profile_team_size: number | null;
+        profile_target_market: string | null;
+        profile_business_model: string | null;
+        profile_traction_summary: string | null;
+      }>
+    >`
+      select
+        o.id as startup_org_id,
+        o.name as startup_org_name,
+        o.logo_url as startup_logo_url,
+        sp.title as post_title,
+        sp.summary as post_summary,
+        nullif(trim(coalesce(sp.stage, '')), '') as post_stage,
+        nullif(trim(coalesce(sp.location, '')), '') as post_location,
+        coalesce(sp.industry_tags, '{}'::text[]) as post_industry_tags,
+        coalesce(sp.need_advisor, false) as post_need_advisor,
+        nullif(trim(coalesce(spro.website_url, '')), '') as profile_website_url,
+        nullif(trim(coalesce(spro.team_overview, '')), '') as profile_team_overview,
+        nullif(trim(coalesce(spro.company_stage, '')), '') as profile_company_stage,
+        spro.founding_year as profile_founding_year,
+        spro.team_size as profile_team_size,
+        nullif(trim(coalesce(spro.target_market, '')), '') as profile_target_market,
+        nullif(trim(coalesce(spro.business_model, '')), '') as profile_business_model,
+        nullif(trim(coalesce(spro.traction_summary, '')), '') as profile_traction_summary
+      from public.organizations o
+      join public.startup_posts sp on sp.startup_org_id = o.id and sp.status = 'published'
+      left join public.startup_profiles spro on spro.startup_org_id = o.id
+      where o.id = ${orgId}::uuid
+        and o.type = 'startup'
+      limit 1
+    `;
+
+    const row = startupRows[0];
+    if (!row?.startup_org_id) {
+      return null;
+    }
+
+    const docRows = await this.prisma.$queryRaw<
+      Array<{
+        id: string;
+        document_type: string;
+        title: string | null;
+        file_url: string | null;
+        storage_bucket: string | null;
+        storage_object_path: string | null;
+        file_name: string | null;
+        summary: string | null;
+      }>
+    >`
+      select
+        d.id,
+        d.document_type::text as document_type,
+        d.title,
+        d.file_url,
+        d.storage_bucket,
+        d.storage_object_path,
+        d.file_name,
+        d.summary
+      from public.startup_data_room_documents d
+      where d.startup_org_id = ${orgId}::uuid
+      order by d.updated_at desc
+    `;
+
+    const data_room_documents = docRows.map((d) => ({
+      id: d.id,
+      document_type: d.document_type,
+      title: d.title ?? d.document_type,
+      file_url: this.resolveDocumentPublicUrl(d.file_url, d.storage_bucket, d.storage_object_path),
+      file_name: this.normalizeOptionalText(d.file_name),
+      summary: this.normalizeOptionalText(d.summary),
+    }));
+
+    return {
+      startup_org_id: row.startup_org_id,
+      startup_org_name: row.startup_org_name,
+      startup_logo_url: this.normalizeOptionalText(row.startup_logo_url),
+      post: {
+        title: row.post_title,
+        summary: row.post_summary,
+        stage: row.post_stage,
+        location: row.post_location,
+        industry_tags: this.normalizeTextArray(row.post_industry_tags),
+        need_advisor: row.post_need_advisor ?? false,
+      },
+      profile: {
+        website_url: row.profile_website_url,
+        team_overview: row.profile_team_overview,
+        company_stage: row.profile_company_stage,
+        founding_year: this.normalizeNullableInteger(row.profile_founding_year),
+        team_size: this.normalizeNullableInteger(row.profile_team_size),
+        target_market: row.profile_target_market,
+        business_model: row.profile_business_model,
+        traction_summary: row.profile_traction_summary,
+      },
+      data_room_documents,
+    };
+  }
+
   async getStartupPost(userId: string): Promise<StartupPostView | null> {
     const membership = await this.resolveStartupMembershipContext(userId);
 
@@ -645,6 +799,7 @@ export class StartupsService {
         stage: string | null;
         location: string | null;
         industry_tags: string[] | null;
+        need_advisor: boolean | null;
         status: string | null;
         published_at: string | Date | null;
         updated_at: string | Date | null;
@@ -658,6 +813,7 @@ export class StartupsService {
         nullif(trim(coalesce(sp.stage, '')), '') as stage,
         nullif(trim(coalesce(sp.location, '')), '') as location,
         coalesce(sp.industry_tags, '{}'::text[]) as industry_tags,
+        coalesce(sp.need_advisor, false) as need_advisor,
         sp.status::text as status,
         sp.published_at,
         sp.updated_at
@@ -679,6 +835,7 @@ export class StartupsService {
       stage: row.stage,
       location: row.location,
       industry_tags: this.normalizeTextArray(row.industry_tags),
+      need_advisor: row.need_advisor ?? false,
       status: row.status,
       published_at: this.normalizeTimestamp(row.published_at),
       updated_at: this.normalizeTimestamp(row.updated_at) ?? new Date().toISOString(),
@@ -1136,6 +1293,7 @@ export class StartupsService {
     const stage = this.normalizeOptionalText(input.stage);
     const location = this.normalizeOptionalText(input.location);
     const industryTags = this.normalizeTextArray(input.industryTags).slice(0, 20);
+    const needAdvisor = typeof input.needAdvisor === 'boolean' ? input.needAdvisor : false;
     const status = this.normalizeOptionalText(input.status)?.toLowerCase();
     if (status !== 'draft' && status !== 'published') {
       throw new Error('Startup post status must be draft or published');
@@ -1161,6 +1319,7 @@ export class StartupsService {
         stage,
         location,
         industry_tags,
+        need_advisor,
         status,
         published_at,
         created_by,
@@ -1174,6 +1333,7 @@ export class StartupsService {
         ${stage},
         ${location},
         ${industryTags}::text[],
+        ${needAdvisor},
         ${status}::public.startup_post_status,
         case
           when ${status}::public.startup_post_status = 'published'::public.startup_post_status
@@ -1191,6 +1351,7 @@ export class StartupsService {
         stage = excluded.stage,
         location = excluded.location,
         industry_tags = excluded.industry_tags,
+        need_advisor = excluded.need_advisor,
         status = excluded.status,
         published_at = case
           when excluded.status = 'published'::public.startup_post_status

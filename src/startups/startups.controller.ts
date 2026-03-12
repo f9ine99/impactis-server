@@ -6,6 +6,7 @@ import {
   StartupMutationResult,
   StartupPostView,
   StartupProfileView,
+  StartupPublicDiscoveryProfileView,
   StartupReadinessView,
   UpsertStartupDataRoomDocumentInput,
   UpdateStartupPostInput,
@@ -65,6 +66,22 @@ export class StartupsController {
 
     try {
       return await this.startups.getStartupPost(user.id);
+    } catch {
+      return null;
+    }
+  }
+
+  @Get('discovery/:startupOrgId/profile')
+  async getStartupPublicDiscoveryProfile(
+    @Req() req: RequestWithUser,
+    @Param('startupOrgId') startupOrgId: string,
+  ): Promise<StartupPublicDiscoveryProfileView | null> {
+    const user = req.user;
+    if (!user) {
+      return null;
+    }
+    try {
+      return await this.startups.getStartupPublicProfileForDiscovery(user.id, startupOrgId);
     } catch {
       return null;
     }

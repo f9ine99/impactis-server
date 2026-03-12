@@ -764,6 +764,7 @@ export class WorkspaceService {
         industry_tags: string[] | null;
         published_at: string | Date | null;
         startup_verification_status: string | null;
+        need_advisor: boolean | null;
       }>
     >`
       select
@@ -776,7 +777,8 @@ export class WorkspaceService {
         nullif(trim(coalesce(sp.location, '')), '') as location,
         coalesce(sp.industry_tags, '{}'::text[]) as industry_tags,
         sp.published_at,
-        coalesce(v.status::text, 'unverified') as startup_verification_status
+        coalesce(v.status::text, 'unverified') as startup_verification_status,
+        coalesce(sp.need_advisor, false) as need_advisor
       from public.startup_posts sp
       join public.organizations o on o.id = sp.startup_org_id
       left join public.org_status s on s.org_id = o.id
@@ -784,7 +786,7 @@ export class WorkspaceService {
       where sp.status = 'published'::public.startup_post_status
         and o.type = 'startup'::public.org_type
         and coalesce(s.status::text, 'active') = 'active'
-      order by coalesce(sp.published_at, sp.updated_at) desc, sp.created_at desc
+      order by coalesce(sp.need_advisor, false) desc, coalesce(sp.published_at, sp.updated_at) desc, sp.created_at desc
       limit 120
     `;
 
@@ -807,6 +809,7 @@ export class WorkspaceService {
           startup_verification_status: this.normalizeStartupVerificationStatus(
             row.startup_verification_status,
           ),
+          need_advisor: row.need_advisor ?? false,
         };
       })
       .filter((row): row is WorkspaceStartupDiscoveryFeedItem => !!row);
@@ -1031,6 +1034,7 @@ export class WorkspaceService {
         stage: string | null;
         location: string | null;
         industry_tags: string[] | null;
+        need_advisor: boolean | null;
         status: string | null;
         published_at: string | Date | null;
         updated_at: string | Date | null;
@@ -1044,6 +1048,7 @@ export class WorkspaceService {
         nullif(trim(coalesce(sp.stage, '')), '') as stage,
         nullif(trim(coalesce(sp.location, '')), '') as location,
         coalesce(sp.industry_tags, '{}'::text[]) as industry_tags,
+        coalesce(sp.need_advisor, false) as need_advisor,
         sp.status::text as status,
         sp.published_at,
         sp.updated_at
@@ -1066,6 +1071,7 @@ export class WorkspaceService {
       stage: row.stage,
       location: row.location,
       industry_tags: this.normalizeIndustryTags(row.industry_tags),
+      need_advisor: row.need_advisor ?? false,
       status: row.status,
       published_at: this.normalizeTimestamp(row.published_at),
       updated_at: updatedAt,

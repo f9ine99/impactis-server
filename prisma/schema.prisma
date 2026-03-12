@@ -14,6 +14,13 @@ model users {
   created_at                                    DateTime?                     @default(now()) @db.Timestamptz(6)
   updated_at                                    DateTime?                     @default(now()) @db.Timestamptz(6)
   raw_user_meta_data                            Json?
+  email_verified                                Boolean                       @default(false)
+  image                                         String?
+  name                                          String?
+  emailVerified                                 Boolean?                      @default(false)
+  createdAt                                     DateTime?                     @default(now()) @db.Timestamptz(6)
+  updatedAt                                     DateTime?                     @default(now()) @db.Timestamptz(6)
+  accounts                                      accounts[]
   advisor_profiles                              advisor_profiles[]
   investor_profiles                             investor_profiles[]
   org_invites_org_invites_accepted_byTousers    org_invites[]                 @relation("org_invites_accepted_byTousers")
@@ -23,6 +30,7 @@ model users {
   org_status                                    org_status[]
   org_verifications                             org_verifications[]
   profiles                                      profiles?
+  sessions                                      sessions[]
   startup_data_room_documents                   startup_data_room_documents[]
   startup_posts_startup_posts_created_byTousers startup_posts[]               @relation("startup_posts_created_byTousers")
   startup_posts_startup_posts_updated_byTousers startup_posts[]               @relation("startup_posts_updated_byTousers")
@@ -348,6 +356,11 @@ model organizations {
   startup_data_room_documents startup_data_room_documents[]
   startup_posts               startup_posts?
   startup_profiles            startup_profiles?
+  connection_requests_from    connection_requests[]         @relation("connection_requests_from_org")
+  connection_requests_to      connection_requests[]         @relation("connection_requests_to_org")
+  connections_org_a          connections[]                 @relation("connections_org_a")
+  connections_org_b           connections[]                 @relation("connections_org_b")
+  connection_messages        connection_messages[]
 
   @@index([type, created_at(sort: Desc)], map: "organizations_type_created_idx")
   @@schema("public")
@@ -428,6 +441,7 @@ model startup_posts {
   industry_tags                         String[]            @default([])
   status                                startup_post_status @default(draft)
   published_at                          DateTime?           @db.Timestamptz(6)
+  need_advisor                          Boolean             @default(false)
   created_by                            String?             @db.Uuid
   updated_by                            String?             @db.Uuid
   created_at                            DateTime            @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
@@ -438,6 +452,7 @@ model startup_posts {
 
   @@index([industry_tags], type: Gin)
   @@index([status, published_at(sort: Desc)], map: "startup_posts_status_published_idx")
+  @@index([need_advisor, status], map: "startup_posts_need_advisor_status_idx", where: raw("(need_advisor = true AND status = 'published'::public.startup_post_status)"))
   @@schema("public")
 }
 
@@ -465,6 +480,53 @@ model startup_profiles {
   @@schema("public")
 }
 
+/// Connect request: investor/advisor → startup. When accepted, a connection is created.
+model connection_requests {
+  id           String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  from_org_id  String                    @db.Uuid
+  to_org_id    String                    @db.Uuid
+  status       connection_request_status @default(pending)
+  message      String?
+  created_at   DateTime                  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  responded_at DateTime?                 @db.Timestamptz(6)
+  from_org     organizations             @relation("connection_requests_from_org", fields: [from_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  to_org       organizations             @relation("connection_requests_to_org", fields: [to_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([from_org_id, to_org_id], map: "connection_requests_from_to_unique")
+  @@index([to_org_id, status], map: "connection_requests_to_status_idx")
+  @@index([from_org_id, status], map: "connection_requests_from_status_idx")
+  @@schema("public")
+}
+
+/// After a connection request is accepted, both sides share a connection and can message.
+model connections {
+  id         String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  org_a_id   String                @db.Uuid
+  org_b_id   String                @db.Uuid
+  created_at DateTime              @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  org_a      organizations         @relation("connections_org_a", fields: [org_a_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  org_b      organizations         @relation("connections_org_b", fields: [org_b_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  messages   connection_messages[]
+
+  @@unique([org_a_id, org_b_id], map: "connections_orgs_unique")
+  @@index([org_a_id], map: "connections_org_a_idx")
+  @@index([org_b_id], map: "connections_org_b_idx")
+  @@schema("public")
+}
+
+model connection_messages {
+  id             String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  connection_id  String      @db.Uuid
+  from_org_id   String      @db.Uuid
+  body           String
+  created_at     DateTime    @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  connection     connections @relation(fields: [connection_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  from_org       organizations @relation(fields: [from_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([connection_id, created_at(sort: Asc)], map: "connection_messages_connection_created_idx")
+  @@schema("public")
+}
+
 model buckets {
   id                 String    @id
   name               String
@@ -488,6 +550,63 @@ model objects {
   metadata         Json?
 
   @@schema("storage")
+}
+
+model accounts {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String    @db.Uuid
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime? @db.Timestamptz(6)
+  refreshTokenExpiresAt DateTime? @db.Timestamptz(6)
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime  @db.Timestamptz(6)
+  users                 users     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId], map: "public.accounts_userId_idx")
+  @@schema("public")
+}
+
+model jwks {
+  id         String    @id
+  publicKey  String
+  privateKey String
+  createdAt  DateTime  @db.Timestamptz(6)
+  expiresAt  DateTime? @db.Timestamptz(6)
+
+  @@schema("public")
+}
+
+model sessions {
+  id        String   @id
+  expiresAt DateTime @db.Timestamptz(6)
+  token     String   @unique
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @db.Timestamptz(6)
+  ipAddress String?
+  userAgent String?
+  userId    String   @db.Uuid
+  users     users    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId], map: "public.sessions_userId_idx")
+  @@schema("public")
+}
+
+model verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([identifier])
+  @@schema("public")
 }
 
 enum billing_interval {
@@ -580,6 +699,14 @@ enum startup_data_room_document_type {
 enum startup_post_status {
   draft
   published
+
+  @@schema("public")
+}
+
+enum connection_request_status {
+  pending
+  accepted
+  rejected
 
   @@schema("public")
 }

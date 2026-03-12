@@ -15,6 +15,7 @@ import { ConditionalGetEtagInterceptor } from './http/conditional-get-etag.inter
 import { BillingModule } from './billing/billing.module';
 import { SessionsModule } from './sessions/sessions.module';
 import { CapabilitiesModule } from './capabilities/capabilities.module';
+import { ConnectionsModule } from './connections/connections.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { CapabilitiesModule } from './capabilities/capabilities.module';
     CacheModule,
     HealthModule,
     CapabilitiesModule,
+    ConnectionsModule,
   ],
   providers: [
     {

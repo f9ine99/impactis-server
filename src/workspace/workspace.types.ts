@@ -76,6 +76,7 @@ export type WorkspaceStartupDiscoveryFeedItem = {
   industry_tags: string[];
   published_at: string | null;
   startup_verification_status: 'unverified' | 'pending' | 'approved' | 'rejected';
+  need_advisor: boolean;
 };
 
 export type WorkspaceIdentitySnapshot = {
@@ -168,6 +169,7 @@ export type WorkspaceSettingsSnapshot = {
     stage: string | null;
     location: string | null;
     industry_tags: string[];
+    need_advisor: boolean;
     status: string;
     published_at: string | null;
     updated_at: string;

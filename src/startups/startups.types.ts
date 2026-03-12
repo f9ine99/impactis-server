@@ -1,6 +1,7 @@
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -90,9 +91,43 @@ export type StartupPostView = {
   stage: string | null;
   location: string | null;
   industry_tags: string[];
+  need_advisor: boolean;
   status: string;
   published_at: string | null;
   updated_at: string;
+};
+
+/** Public profile + post + data room for discovery (investor/advisor viewing a startup). */
+export type StartupPublicDiscoveryProfileView = {
+  startup_org_id: string;
+  startup_org_name: string;
+  startup_logo_url: string | null;
+  post: {
+    title: string;
+    summary: string;
+    stage: string | null;
+    location: string | null;
+    industry_tags: string[];
+    need_advisor: boolean;
+  };
+  profile: {
+    website_url: string | null;
+    team_overview: string | null;
+    company_stage: string | null;
+    founding_year: number | null;
+    team_size: number | null;
+    target_market: string | null;
+    business_model: string | null;
+    traction_summary: string | null;
+  };
+  data_room_documents: Array<{
+    id: string;
+    document_type: string;
+    title: string;
+    file_url: string | null;
+    file_name: string | null;
+    summary: string | null;
+  }>;
 };
 
 export type StartupDataRoomDocumentView = {
@@ -241,6 +276,10 @@ export class UpdateStartupPostInput {
   @MinLength(2, { each: true })
   @MaxLength(48, { each: true })
   industryTags?: string[] | null;
+
+  @IsOptional()
+  @IsBoolean()
+  needAdvisor?: boolean;
 
   @IsIn(['draft', 'published'])
   status!: string;
