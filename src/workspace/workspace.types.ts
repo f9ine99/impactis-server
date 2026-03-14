@@ -77,6 +77,27 @@ export type WorkspaceStartupDiscoveryFeedItem = {
   published_at: string | null;
   startup_verification_status: 'unverified' | 'pending' | 'approved' | 'rejected';
   need_advisor: boolean;
+  logo_url: string | null;
+};
+
+/** Unified discovery card for all roles (startup, investor, advisor). */
+export type WorkspaceUnifiedDiscoveryCard = {
+  org_id: string;
+  org_type: 'startup' | 'investor' | 'advisor';
+  name: string;
+  description: string;
+  industry_or_expertise: string[];
+  stage: string | null;
+  location: string | null;
+  image_url: string | null;
+  /** Only for startups: post id for linking. */
+  id?: string;
+};
+
+export type OnboardingProgressSnapshot = {
+  total_stages: number;
+  completed_stages: number;
+  is_completed: boolean;
 };
 
 export type WorkspaceIdentitySnapshot = {
@@ -92,7 +113,11 @@ export type WorkspaceIdentitySnapshot = {
     linkedin_url: string | null;
     timezone_name: string | null;
     preferred_contact_method: 'email' | 'phone' | 'linkedin' | null;
+    profile_completeness_percent: number | null;
   };
+  onboarding_progress: OnboardingProgressSnapshot | null;
+  /** Onboarding form details per org type (e.g. startup: { companyName, websiteUrl, ... }). */
+  onboarding_details: Record<string, Record<string, unknown>> | null;
   membership: {
     org_id: string;
     user_id: string;
@@ -202,6 +227,8 @@ export type WorkspaceDashboardSnapshot = {
   organization_core_team: WorkspaceCoreTeamMember[];
   organization_readiness: WorkspaceOrganizationReadinessSnapshot | null;
   startup_discovery_feed: WorkspaceStartupDiscoveryFeedItem[];
+  /** Unified discovery cards for current user role (startups see investors+advisors; investors see startups+advisors; advisors see startups+investors). */
+  discovery_feed: WorkspaceUnifiedDiscoveryCard[];
   startup_readiness: WorkspaceSettingsSnapshot['startup_readiness'];
 };
 
@@ -213,5 +240,6 @@ export type WorkspaceBootstrapSnapshot = {
   organization_core_team: WorkspaceDashboardSnapshot['organization_core_team'];
   organization_readiness: WorkspaceDashboardSnapshot['organization_readiness'];
   startup_discovery_feed: WorkspaceDashboardSnapshot['startup_discovery_feed'];
+  discovery_feed: WorkspaceDashboardSnapshot['discovery_feed'];
   startup_readiness: WorkspaceDashboardSnapshot['startup_readiness'];
 };

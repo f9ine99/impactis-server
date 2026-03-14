@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { MailerService } from '../mailer/mailer.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CreateConnectionRequestInput } from './connections.types';
 import type {
   ConnectionMessageView,
@@ -9,9 +11,15 @@ import type {
 
 type MembershipContext = { orgId: string; orgType: string };
 
+const APP_ORIGIN = process.env.NEXT_PUBLIC_APP_ORIGIN ?? process.env.APP_ORIGIN ?? 'http://127.0.0.1:3000';
+
 @Injectable()
 export class ConnectionsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly mailer: MailerService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   private async getRequesterContext(userId: string): Promise<MembershipContext> {
     const rows = await this.prisma.$queryRaw<
@@ -34,10 +42,43 @@ export class ConnectionsService {
     return { orgId: row.org_id, orgType: row.org_type.toLowerCase() };
   }
 
+  private async getOrgMemberEmails(orgId: string): Promise<Array<{ user_id: string; email: string | null }>> {
+    const rows = await this.prisma.$queryRaw<
+      Array<{ user_id: string; email: string | null }>
+    >`
+      select om.user_id, u.email
+      from public.org_members om
+      join public.users u on u.id = om.user_id
+      left join public.org_status s on s.org_id = om.org_id
+      where om.org_id = ${orgId}::uuid and om.status = 'active'
+        and coalesce(s.status::text, 'active') = 'active'
+    `;
+    return rows ?? [];
+  }
+
+  private async requireOnboardingCompleted(userId: string): Promise<void> {
+    const rows = await this.prisma.$queryRaw<
+      Array<{ raw_user_meta_data: unknown }>
+    >`
+      select raw_user_meta_data from public.users where id = ${userId}::uuid limit 1
+    `;
+    const meta = rows[0]?.raw_user_meta_data;
+    const completed =
+      meta &&
+      typeof meta === 'object' &&
+      (meta as Record<string, unknown>).onboardingCompleted === true;
+    if (!completed) {
+      throw new Error(
+        'Complete onboarding before sending connection requests. Finish the onboarding steps and try again.',
+      );
+    }
+  }
+
   async createRequest(
     userId: string,
     input: CreateConnectionRequestInput,
   ): Promise<ConnectionRequestView> {
+    await this.requireOnboardingCompleted(userId);
     const ctx = await this.getRequesterContext(userId);
     if (ctx.orgType !== 'investor' && ctx.orgType !== 'advisor') {
       throw new Error('Only investors and advisors can send connection requests');
@@ -80,6 +121,28 @@ export class ConnectionsService {
     `;
     const r = inserted[0];
     if (!r) throw new Error('Failed to create connection request');
+
+    const connectionsLink = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/connections`;
+    const title = `${fromName} wants to connect`;
+    const body = `You have a new connection request from ${fromName}. Accept or decline in Connections.`;
+    await this.notifications.createForOrg(toOrgId, {
+      type: 'connection_request_received',
+      title,
+      body,
+      link: connectionsLink,
+    });
+    const toOrgMembers = await this.getOrgMemberEmails(toOrgId);
+    for (const m of toOrgMembers) {
+      if (m.email?.trim()) {
+        await this.mailer.send({
+          to: m.email.trim(),
+          subject: title,
+          text: `${body}\n\nView request: ${connectionsLink}`,
+          html: `<p>${body.replace(/\n/g, '<br>')}</p><p><a href="${connectionsLink}">View request</a></p>`,
+        });
+      }
+    }
+
     return {
       id: r.id,
       from_org_id: r.from_org_id,
@@ -169,6 +232,7 @@ export class ConnectionsService {
   }
 
   async acceptRequest(userId: string, requestId: string): Promise<ConnectionView> {
+    await this.requireOnboardingCompleted(userId);
     const ctx = await this.getRequesterContext(userId);
     if (ctx.orgType !== 'startup') {
       throw new Error('Only startups can accept connection requests');
@@ -210,6 +274,77 @@ export class ConnectionsService {
     if (!conn) throw new Error('Connection not found');
     const otherId = conn.org_a_id === ctx.orgId ? conn.org_b_id : conn.org_a_id;
     const otherName = conn.org_a_id === ctx.orgId ? conn.org_b_name : conn.org_a_name;
+
+    const connectionsLink = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/connections`;
+    const toOrgName = conn.org_a_id === ctx.orgId ? conn.org_b_name : conn.org_a_name;
+    await this.notifications.createForOrg(req.from_org_id, {
+      type: 'connection_request_accepted',
+      title: `${toOrgName} accepted your connection request`,
+      body: `You are now connected. You can message from Deal Room.`,
+      link: connectionsLink,
+    });
+    const fromOrgMembers = await this.getOrgMemberEmails(req.from_org_id);
+    for (const m of fromOrgMembers) {
+      if (m.email?.trim()) {
+        await this.mailer.send({
+          to: m.email.trim(),
+          subject: `${toOrgName} accepted your connection request`,
+          text: `You are now connected. View Deal Room: ${connectionsLink}`,
+          html: `<p>You are now connected with ${toOrgName}. <a href="${connectionsLink}">Open Deal Room</a></p>`,
+        });
+      }
+    }
+
+    const orgTypes = await this.prisma.$queryRaw<
+      Array<{ id: string; type: string }>
+    >`
+      select id::text, type::text from public.organizations
+      where id = ${conn.org_a_id}::uuid or id = ${conn.org_b_id}::uuid
+    `;
+    const typesSet = new Set(orgTypes.map((o) => o.type));
+    const isStartupInvestor =
+      typesSet.has('startup') && typesSet.has('investor');
+    if (isStartupInvestor) {
+      try {
+        await this.prisma.$executeRaw`
+          insert into public.deal_rooms (connection_id)
+          values (${conn.id}::uuid)
+          on conflict (connection_id) do nothing
+        `;
+      } catch {
+        // Table may not exist yet; run prisma/migrations/add_notifications_and_deal_rooms.sql
+      }
+      const dealRoomLink = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/connections`;
+      await this.notifications.createForOrg(conn.org_a_id, {
+        type: 'deal_room_created',
+        title: 'Deal Room created',
+        body: `A Deal Room is now available for this connection. Open it from Connections.`,
+        link: dealRoomLink,
+      });
+      await this.notifications.createForOrg(conn.org_b_id, {
+        type: 'deal_room_created',
+        title: 'Deal Room created',
+        body: `A Deal Room is now available for this connection. Open it from Connections.`,
+        link: dealRoomLink,
+      });
+      const allMemberEmails = [
+        ...(await this.getOrgMemberEmails(conn.org_a_id)),
+        ...(await this.getOrgMemberEmails(conn.org_b_id)),
+      ];
+      const sent = new Set<string>();
+      for (const m of allMemberEmails) {
+        if (m.email?.trim() && !sent.has(m.email.trim())) {
+          sent.add(m.email.trim());
+          await this.mailer.send({
+            to: m.email.trim(),
+            subject: 'Deal Room created – Impactis',
+            text: `A Deal Room is now available for your connection. Open it from Connections: ${dealRoomLink}`,
+            html: `<p>A Deal Room is now available. <a href="${dealRoomLink}">Open Deal Room</a></p>`,
+          });
+        }
+      }
+    }
+
     return {
       id: conn.id,
       org_a_id: conn.org_a_id,
@@ -221,6 +356,7 @@ export class ConnectionsService {
   }
 
   async rejectRequest(userId: string, requestId: string): Promise<void> {
+    await this.requireOnboardingCompleted(userId);
     const ctx = await this.getRequesterContext(userId);
     if (ctx.orgType !== 'startup') {
       throw new Error('Only startups can reject connection requests');

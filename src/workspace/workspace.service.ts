@@ -15,6 +15,7 @@ import {
   WorkspaceSettingsSnapshot,
   WorkspaceStartupDiscoveryFeedItem,
   WorkspaceSnapshot,
+  WorkspaceUnifiedDiscoveryCard,
 } from './workspace.types';
 
 type WorkspaceMembershipContext = {
@@ -664,6 +665,8 @@ export class WorkspaceService {
         ...bootstrap.profile,
         id: bootstrap.profile.id || userId,
       },
+      onboarding_progress: null,
+      onboarding_details: null,
       membership: bootstrap.membership
         ? {
             ...bootstrap.membership,
@@ -765,6 +768,7 @@ export class WorkspaceService {
         published_at: string | Date | null;
         startup_verification_status: string | null;
         need_advisor: boolean | null;
+        logo_url: string | null;
       }>
     >`
       select
@@ -778,7 +782,8 @@ export class WorkspaceService {
         coalesce(sp.industry_tags, '{}'::text[]) as industry_tags,
         sp.published_at,
         coalesce(v.status::text, 'unverified') as startup_verification_status,
-        coalesce(sp.need_advisor, false) as need_advisor
+        coalesce(sp.need_advisor, false) as need_advisor,
+        o.logo_url as logo_url
       from public.startup_posts sp
       join public.organizations o on o.id = sp.startup_org_id
       left join public.org_status s on s.org_id = o.id
@@ -810,9 +815,122 @@ export class WorkspaceService {
             row.startup_verification_status,
           ),
           need_advisor: row.need_advisor ?? false,
+          logo_url: this.normalizeOptionalText(row.logo_url),
         };
       })
       .filter((row): row is WorkspaceStartupDiscoveryFeedItem => !!row);
+  }
+
+  /** Unified discovery feed: returns cards for roles the viewer can connect with (startups see investors+advisors; investors see startups+advisors; advisors see startups+investors). */
+  private async listUnifiedDiscoveryFeed(
+    currentOrgId: string,
+    viewerOrgType: 'startup' | 'investor' | 'advisor',
+  ): Promise<WorkspaceUnifiedDiscoveryCard[]> {
+    const cards: WorkspaceUnifiedDiscoveryCard[] = [];
+
+    if (viewerOrgType === 'investor' || viewerOrgType === 'advisor') {
+      const startups = await this.listStartupDiscoveryFeedForInvestorOrAdvisor();
+      for (const s of startups) {
+        if (s.startup_org_id === currentOrgId) continue;
+        cards.push({
+          org_id: s.startup_org_id,
+          org_type: 'startup',
+          name: s.startup_org_name,
+          description: s.summary,
+          industry_or_expertise: s.industry_tags,
+          stage: s.stage,
+          location: s.location,
+          image_url: s.logo_url,
+          id: s.id,
+        });
+      }
+    }
+
+    if (viewerOrgType === 'startup' || viewerOrgType === 'advisor') {
+      const investorRows = await this.prisma.$queryRaw<
+        Array<{
+          org_id: string;
+          name: string;
+          location: string | null;
+          logo_url: string | null;
+          thesis: string | null;
+          sector_tags: string[] | null;
+        }>
+      >`
+        select o.id::text as org_id, o.name, o.location, o.logo_url, ip.thesis, coalesce(ip.sector_tags, '{}'::text[]) as sector_tags
+        from public.organizations o
+        join public.investor_profiles ip on ip.investor_org_id = o.id
+        left join public.org_status s on s.org_id = o.id
+        where o.type = 'investor'::public.org_type and o.id != ${currentOrgId}::uuid
+          and coalesce(s.status::text, 'active') = 'active'
+        order by ip.updated_at desc
+        limit 80
+      `;
+      for (const row of investorRows ?? []) {
+        cards.push({
+          org_id: row.org_id,
+          org_type: 'investor',
+          name: row.name,
+          description: row.thesis ?? '',
+          industry_or_expertise: this.normalizeIndustryTags(row.sector_tags),
+          stage: null,
+          location: this.normalizeOptionalText(row.location),
+          image_url: this.normalizeOptionalText(row.logo_url),
+        });
+      }
+    }
+
+    if (viewerOrgType === 'startup' || viewerOrgType === 'investor') {
+      const advisorRows = await this.prisma.$queryRaw<
+        Array<{
+          org_id: string;
+          name: string;
+          location: string | null;
+          logo_url: string | null;
+          bio: string | null;
+          expertise_tags: string[] | null;
+        }>
+      >`
+        select o.id::text as org_id, o.name, o.location, o.logo_url, ap.bio, coalesce(ap.expertise_tags, '{}'::text[]) as expertise_tags
+        from public.organizations o
+        join public.advisor_profiles ap on ap.advisor_org_id = o.id
+        left join public.org_status s on s.org_id = o.id
+        where o.type = 'advisor'::public.org_type and o.id != ${currentOrgId}::uuid
+          and coalesce(s.status::text, 'active') = 'active'
+        order by ap.updated_at desc
+        limit 80
+      `;
+      for (const row of advisorRows ?? []) {
+        cards.push({
+          org_id: row.org_id,
+          org_type: 'advisor',
+          name: row.name,
+          description: row.bio ?? '',
+          industry_or_expertise: this.normalizeIndustryTags(row.expertise_tags),
+          stage: null,
+          location: this.normalizeOptionalText(row.location),
+          image_url: this.normalizeOptionalText(row.logo_url),
+        });
+      }
+    }
+
+    return cards;
+  }
+
+  /** Returns a single discovery card by org id if the current user's feed contains it. */
+  async getUnifiedDiscoveryCardForUser(
+    userId: string,
+    orgId: string,
+  ): Promise<WorkspaceUnifiedDiscoveryCard | null> {
+    if (!orgId?.trim()) {
+      return null;
+    }
+    const membership = await this.resolvePrimaryWorkspaceMembershipForUser(userId);
+    if (!membership) {
+      return null;
+    }
+    const feed = await this.listUnifiedDiscoveryFeed(membership.orgId, membership.orgType);
+    return feed.find((c) => c.org_id === orgId) ?? null;
   }
 
   private async getCurrentPlanForOrg(orgId: string): Promise<WorkspaceCurrentPlanSnapshot | null> {
@@ -1164,6 +1282,8 @@ export class WorkspaceService {
     ]);
 
     const profile = profileRows[0];
+    const profileCompletenessPercent = null;
+
     const profilePayload: WorkspaceIdentitySnapshot['profile'] = {
       id: userId,
       full_name: profile?.full_name ?? null,
@@ -1178,12 +1298,67 @@ export class WorkspaceService {
       preferred_contact_method: this.normalizePreferredContactMethod(
         profile?.preferred_contact_method ?? null,
       ),
+      profile_completeness_percent: profileCompletenessPercent,
     };
+
+    let onboardingProgress: WorkspaceIdentitySnapshot['onboarding_progress'] = null;
+    let onboardingDetails: WorkspaceIdentitySnapshot['onboarding_details'] = null;
+    const orgTypeForOnboarding = membershipRow
+      ? this.normalizeOrgType(membershipRow.organization_type)
+      : null;
+    if (orgTypeForOnboarding) {
+      try {
+        const progressRows = await this.prisma.$queryRaw<
+          Array<{ total_stages: number; completed_stages: number; is_completed: boolean }>
+        >`
+          select total_stages::int as total_stages, completed_stages::int as completed_stages, is_completed
+          from public.user_onboarding_progress
+          where user_id = ${userId}::uuid and organization_type = ${orgTypeForOnboarding}
+          limit 1
+        `;
+        const prog = progressRows[0];
+        if (prog && typeof prog.total_stages === 'number' && typeof prog.completed_stages === 'number') {
+          onboardingProgress = {
+            total_stages: Math.max(1, Math.min(20, prog.total_stages)),
+            completed_stages: Math.max(0, Math.min(prog.total_stages, prog.completed_stages)),
+            is_completed: prog.is_completed === true,
+          };
+        }
+      } catch {
+        // Table may not exist
+      }
+    }
+    try {
+      const detailsRows = await this.prisma.$queryRaw<
+        Array<{ organization_type: string; details: unknown }>
+      >`
+        select organization_type::text as organization_type, details
+        from public.user_onboarding_details
+        where user_id = ${userId}::uuid
+      `;
+      if (detailsRows?.length) {
+        const map: Record<string, Record<string, unknown>> = {};
+        for (const row of detailsRows) {
+          const ot = row.organization_type?.trim?.()?.toLowerCase?.();
+          if (ot && (ot === 'startup' || ot === 'investor' || ot === 'advisor')) {
+            map[ot] =
+              row.details && typeof row.details === 'object' && !Array.isArray(row.details)
+                ? (row.details as Record<string, unknown>)
+                : {};
+          }
+        }
+        if (Object.keys(map).length) onboardingDetails = map;
+      }
+    } catch {
+      // Table may not exist
+    }
 
     let payload: WorkspaceIdentitySnapshot;
     if (!membershipRow) {
       payload = {
         profile: profilePayload,
+        onboarding_progress: onboardingProgress,
+        onboarding_details: onboardingDetails,
         membership: null,
       };
     } else {
@@ -1203,6 +1378,8 @@ export class WorkspaceService {
       payload = hasValidMembership
         ? {
             profile: profilePayload,
+            onboarding_progress: onboardingProgress,
+            onboarding_details: onboardingDetails,
             membership: {
               org_id: membershipRow.org_id,
               user_id: membershipRow.user_id,
@@ -1222,6 +1399,8 @@ export class WorkspaceService {
           }
         : {
             profile: profilePayload,
+            onboarding_progress: onboardingProgress,
+            onboarding_details: onboardingDetails,
             membership: null,
           };
     }
@@ -1320,7 +1499,7 @@ export class WorkspaceService {
   ): Promise<WorkspaceDashboardSnapshot | null> {
     try {
       const membership = await this.resolvePrimaryWorkspaceMembershipForUser(userId);
-      const [verificationStatus, currentPlan, organizationCoreTeam, startupReadiness, organizationReadiness, startupDiscoveryFeed] = await Promise.all([
+      const [verificationStatus, currentPlan, organizationCoreTeam, startupReadiness, organizationReadiness, startupDiscoveryFeed, discoveryFeed] = await Promise.all([
         this.getVerificationStatus(membership.orgId),
         this.getCurrentPlanForOrg(membership.orgId),
         this.listOrganizationCoreTeamForOrg(membership.orgId),
@@ -1331,6 +1510,7 @@ export class WorkspaceService {
         membership.orgType === 'investor' || membership.orgType === 'advisor'
           ? this.listStartupDiscoveryFeedForInvestorOrAdvisor()
           : Promise.resolve([]),
+        this.listUnifiedDiscoveryFeed(membership.orgId, membership.orgType),
       ]);
 
       return {
@@ -1339,6 +1519,7 @@ export class WorkspaceService {
         organization_core_team: organizationCoreTeam,
         organization_readiness: organizationReadiness,
         startup_discovery_feed: startupDiscoveryFeed,
+        discovery_feed: discoveryFeed,
         startup_readiness: startupReadiness,
       };
     } catch {
@@ -1520,6 +1701,7 @@ export class WorkspaceService {
           organization_core_team: [],
           organization_readiness: null,
           startup_discovery_feed: [],
+          discovery_feed: [],
           startup_readiness: null,
         };
 
@@ -1550,7 +1732,7 @@ export class WorkspaceService {
         },
       };
 
-      const [organizationCoreTeam, currentPlan, startupReadiness, organizationReadiness, startupDiscoveryFeed] = await Promise.all([
+      const [organizationCoreTeam, currentPlan, startupReadiness, organizationReadiness, startupDiscoveryFeed, discoveryFeed] = await Promise.all([
         this.listOrganizationCoreTeamForOrg(membership.org_id),
         this.getCurrentPlanForOrg(membership.org_id),
         membership.organization.type === 'startup' && row.readiness_org_id
@@ -1577,6 +1759,7 @@ export class WorkspaceService {
         membership.organization.type === 'investor' || membership.organization.type === 'advisor'
           ? this.listStartupDiscoveryFeedForInvestorOrAdvisor()
           : Promise.resolve([]),
+        this.listUnifiedDiscoveryFeed(membership.org_id, membership.organization.type as 'startup' | 'investor' | 'advisor'),
       ]);
 
       const payload: WorkspaceBootstrapSnapshot = {
@@ -1587,6 +1770,7 @@ export class WorkspaceService {
         organization_core_team: organizationCoreTeam,
         organization_readiness: organizationReadiness,
         startup_discovery_feed: startupDiscoveryFeed,
+        discovery_feed: discoveryFeed,
         startup_readiness: startupReadiness,
       };
 

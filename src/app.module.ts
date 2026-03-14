@@ -16,6 +16,8 @@ import { BillingModule } from './billing/billing.module';
 import { SessionsModule } from './sessions/sessions.module';
 import { CapabilitiesModule } from './capabilities/capabilities.module';
 import { ConnectionsModule } from './connections/connections.module';
+import { MailerModule } from './mailer/mailer.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -37,6 +39,8 @@ import { ConnectionsModule } from './connections/connections.module';
     HealthModule,
     CapabilitiesModule,
     ConnectionsModule,
+    MailerModule,
+    NotificationsModule,
   ],
   providers: [
     {

@@ -23,6 +23,28 @@ export class ProfilesService {
     return trimmed.length > 0 ? trimmed : null;
   }
 
+  /** Same 7-field completeness as client: fullName, location, bio, headline, phone, timezoneName, websiteUrl. */
+  private computeProfileCompletenessPercent(input: {
+    fullName: string | null;
+    location: string | null;
+    bio: string | null;
+    headline: string | null;
+    phone: string | null;
+    timezoneName: string | null;
+    websiteUrl: string | null;
+  }): number {
+    const total = 7;
+    let completed = 0;
+    if (input.fullName && input.fullName.trim().length > 1) completed += 1;
+    if (input.location && input.location.trim().length > 1) completed += 1;
+    if (input.bio && input.bio.trim().length >= 20) completed += 1;
+    if (input.headline && input.headline.trim().length > 1) completed += 1;
+    if (input.phone && input.phone.trim().length > 7) completed += 1;
+    if (input.timezoneName && input.timezoneName.trim().length > 2) completed += 1;
+    if (input.websiteUrl && input.websiteUrl.trim().length > 8) completed += 1;
+    return Math.min(100, Math.round((completed / total) * 100));
+  }
+
   private async invalidateWorkspaceBootstrapForUserAndOrgMembers(userId: string): Promise<void> {
     const orgRows = await this.prisma.$queryRaw<Array<{ org_id: string }>>`
       select om.org_id

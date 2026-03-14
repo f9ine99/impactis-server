@@ -7,6 +7,7 @@ import {
   WorkspaceDashboardSnapshot,
   WorkspaceIdentitySnapshot,
   WorkspaceSettingsSnapshot,
+  WorkspaceUnifiedDiscoveryCard,
 } from './workspace.types';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
 
@@ -87,5 +88,18 @@ export class WorkspaceController {
     }
 
     return this.workspaceService.getWorkspaceBootstrapSnapshotForUser(user.id);
+  }
+
+  @Get('discovery/card')
+  async getDiscoveryCard(
+    @Req() req: RequestWithUser,
+    @Query('orgId') orgId?: string,
+  ): Promise<WorkspaceUnifiedDiscoveryCard | null> {
+    const user = req.user;
+    if (!user || !orgId?.trim()) {
+      return null;
+    }
+
+    return this.workspaceService.getUnifiedDiscoveryCardForUser(user.id, orgId.trim());
   }
 }
